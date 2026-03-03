@@ -165,6 +165,48 @@ describe("DebugMarkdownLogger substrate response logging", () => {
     );
     expect(files.length).toBe(0);
   });
+
+  test("debug mode writes outgoing stream body when enabled", async () => {
+    const debugPath = mkdtempSync(path.join(tmpdir(), "proxy-logger-"));
+    tempDirs.push(debugPath);
+    const options = createOptions(debugPath, LogLevels.Debug);
+    options.logStreamingResponseBody = true;
+    const logger = new DebugMarkdownLogger(options, true);
+
+    await logger.logOutgoingStreamBody(
+      200,
+      [["content-type", "text/event-stream"]],
+      'event: response.completed\ndata: {"type":"response.completed"}\n\ndata: [DONE]\n\n',
+    );
+
+    const files = readdirSync(debugPath).filter((name) =>
+      name.endsWith("-outgoing-stream-body.md"),
+    );
+    expect(files.length).toBe(1);
+    const content = readFileSync(path.join(debugPath, files[0]), "utf8");
+    expect(content.includes("Outgoing Stream Body")).toBeTrue();
+    expect(content.includes("response.completed")).toBeTrue();
+    expect(content.includes("[DONE]")).toBeTrue();
+  });
+
+  test("info mode does not write outgoing stream body", async () => {
+    const debugPath = mkdtempSync(path.join(tmpdir(), "proxy-logger-"));
+    tempDirs.push(debugPath);
+    const options = createOptions(debugPath, LogLevels.Info);
+    options.logStreamingResponseBody = true;
+    const logger = new DebugMarkdownLogger(options, true);
+
+    await logger.logOutgoingStreamBody(
+      200,
+      [["content-type", "text/event-stream"]],
+      'event: response.completed\ndata: {"type":"response.completed"}\n\ndata: [DONE]\n\n',
+    );
+
+    const files = readdirSync(debugPath).filter((name) =>
+      name.endsWith("-outgoing-stream-body.md"),
+    );
+    expect(files.length).toBe(0);
+  });
 });
 
 function createOptions(

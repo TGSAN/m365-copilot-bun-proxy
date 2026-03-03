@@ -44,6 +44,16 @@ Logging level is configured with `logLevel` in `config.json` (default `info`):
 - `warning`: includes `outgoing-response` only for HTTP 4xx status
 - `error`: includes `outgoing-response` only for HTTP 5xx status
 
+To capture outbound SSE payloads (for `text/event-stream` responses), set:
+
+```json
+{
+  "logStreamingResponseBody": true
+}
+```
+
+When enabled, and debug logging is active (`--debug`) with `logLevel` of `debug` or `trace`, the proxy writes `outgoing-stream-body` markdown logs containing the streamed SSE body.
+
 Default listen URL is `http://localhost:4000`.
 
 Configuration is loaded from `config.json` (and `config.{env}.json` when `NODE_ENV` is set).

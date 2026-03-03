@@ -47,6 +47,7 @@ const WrapperOptionsSchema = z.object({
   listenUrl: z.string().default("http://localhost:4000"),
   debugPath: z.string().nullable().default("./Logs"),
   logLevel: LogLevelSchema.default(LogLevels.Info),
+  logStreamingResponseBody: z.boolean().default(false),
   openAiTransformMode: OpenAiTransformModeSchema.default(
     OpenAiTransformModes.Simulated,
   ),

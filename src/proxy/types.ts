@@ -171,6 +171,7 @@ export type WrapperOptions = {
   listenUrl: string;
   debugPath: string | null;
   logLevel: LogLevel;
+  logStreamingResponseBody?: boolean;
   openAiTransformMode: string;
   temporaryChat: boolean;
   ignoreIncomingAuthorizationHeader: boolean;

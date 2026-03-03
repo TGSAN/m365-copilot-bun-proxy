@@ -1160,6 +1160,7 @@ describe("simulated transform mode proxy flow", () => {
     expect(sseEventNames).toContain("response.created");
     expect(sseEventNames).toContain("response.in_progress");
     expect(sseEventNames).toContain("response.completed");
+    expect(sseEventNames).toContain("done");
     expect(isJsonObject(completedResponse)).toBeTrue();
     const completed = completedResponse as JsonObject;
     expect(tryGetString(completed, "status")).toBe("completed");

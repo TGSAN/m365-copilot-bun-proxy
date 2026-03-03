@@ -147,17 +147,36 @@ export function buildResponseOutputItemAddedEvent(
   };
 }
 
+export function buildResponseContentPartAddedEvent(
+  responseId: string,
+  outputIndex: number,
+  itemId: string,
+  part: JsonObject,
+  contentIndex = 0,
+): JsonObject {
+  return {
+    type: "response.content_part.added",
+    response_id: responseId,
+    output_index: outputIndex,
+    item_id: itemId,
+    content_index: contentIndex,
+    part: cloneJsonValue(part),
+  };
+}
+
 export function buildResponseOutputTextDeltaEvent(
   responseId: string,
   outputIndex: number,
   itemId: string,
   delta: string,
+  contentIndex = 0,
 ): JsonObject {
   return {
     type: "response.output_text.delta",
     response_id: responseId,
     output_index: outputIndex,
     item_id: itemId,
+    content_index: contentIndex,
     delta,
   };
 }
@@ -167,13 +186,32 @@ export function buildResponseOutputTextDoneEvent(
   outputIndex: number,
   itemId: string,
   text: string,
+  contentIndex = 0,
 ): JsonObject {
   return {
     type: "response.output_text.done",
     response_id: responseId,
     output_index: outputIndex,
     item_id: itemId,
+    content_index: contentIndex,
     text,
+  };
+}
+
+export function buildResponseContentPartDoneEvent(
+  responseId: string,
+  outputIndex: number,
+  itemId: string,
+  part: JsonObject,
+  contentIndex = 0,
+): JsonObject {
+  return {
+    type: "response.content_part.done",
+    response_id: responseId,
+    output_index: outputIndex,
+    item_id: itemId,
+    content_index: contentIndex,
+    part: cloneJsonValue(part),
   };
 }
 

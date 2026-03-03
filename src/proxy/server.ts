@@ -27,6 +27,8 @@ import {
   buildMessageOutputItem,
   buildOpenAiResponseFromAssistant,
   buildOpenAiResponseObject,
+  buildResponseContentPartAddedEvent,
+  buildResponseContentPartDoneEvent,
   buildResponseCompletedEvent,
   buildResponseCreatedEvent,
   buildResponseInProgressEvent,
@@ -1584,6 +1586,14 @@ async function buildSuppressedReplayResponsesResult(
             buildMessageOutputItem(outputItemId, "", "in_progress"),
           ),
         );
+        writeDataEvent(
+          buildResponseContentPartAddedEvent(
+            responseId,
+            index,
+            outputItemId,
+            { type: "output_text", text: "" },
+          ),
+        );
         if (replayTextValue) {
           writeDataEvent(
             buildResponseOutputTextDeltaEvent(
@@ -1603,11 +1613,19 @@ async function buildSuppressedReplayResponsesResult(
           ),
         );
         writeDataEvent(
+          buildResponseContentPartDoneEvent(
+            responseId,
+            index,
+            outputItemId,
+            { type: "output_text", text: replayTextValue ?? "" },
+          ),
+        );
+        writeDataEvent(
           buildResponseOutputItemDoneEvent(responseId, index, outputItem),
         );
       }
       writeDataEvent(buildResponseCompletedEvent(completed));
-      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      enqueueSseDoneEvent(controller, encoder);
       controller.close();
     },
   });
@@ -1616,7 +1634,7 @@ async function buildSuppressedReplayResponsesResult(
   headers.set("cache-control", "no-cache");
   headers.set("connection", "keep-alive");
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
-  return new Response(stream, { status: 200, headers });
+  return finalizeOutgoingStreamResponse(services, stream, headers);
 }
 
 async function buildBufferedResponsesStreamResponse(
@@ -1687,6 +1705,14 @@ async function buildBufferedResponsesStreamResponse(
           );
           if (item.type === "message") {
             const content = assistantResponse.content ?? "";
+            writeDataEvent(
+              buildResponseContentPartAddedEvent(
+                responseId,
+                index,
+                String(item.id ?? ""),
+                { type: "output_text", text: "" },
+              ),
+            );
             if (content) {
               writeDataEvent(
                 buildResponseOutputTextDeltaEvent(
@@ -1703,6 +1729,14 @@ async function buildBufferedResponsesStreamResponse(
                 index,
                 String(item.id ?? ""),
                 content,
+              ),
+            );
+            writeDataEvent(
+              buildResponseContentPartDoneEvent(
+                responseId,
+                index,
+                String(item.id ?? ""),
+                { type: "output_text", text: content },
               ),
             );
           }
@@ -1726,7 +1760,7 @@ async function buildBufferedResponsesStreamResponse(
           "response_stream_error",
         );
       } finally {
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        enqueueSseDoneEvent(controller, encoder);
         controller.close();
       }
     },
@@ -1737,7 +1771,7 @@ async function buildBufferedResponsesStreamResponse(
   headers.set("connection", "keep-alive");
   headers.set("x-m365-conversation-id", conversationId);
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
-  return new Response(stream, { status: 200, headers });
+  return finalizeOutgoingStreamResponse(services, stream, headers);
 }
 
 function normalizeSimulatedChatCompletionPayload(
@@ -2364,6 +2398,14 @@ async function buildSimulatedResponsesStreamResponse(
               buildMessageOutputItem(itemId, "", "in_progress"),
             ),
           );
+          writeDataEvent(
+            buildResponseContentPartAddedEvent(
+              responseId,
+              index,
+              itemId,
+              { type: "output_text", text: "" },
+            ),
+          );
           if (text) {
             writeDataEvent(
               buildResponseOutputTextDeltaEvent(responseId, index, itemId, text),
@@ -2371,6 +2413,14 @@ async function buildSimulatedResponsesStreamResponse(
           }
           writeDataEvent(
             buildResponseOutputTextDoneEvent(responseId, index, itemId, text),
+          );
+          writeDataEvent(
+            buildResponseContentPartDoneEvent(
+              responseId,
+              index,
+              itemId,
+              { type: "output_text", text },
+            ),
           );
           writeDataEvent(
             buildResponseOutputItemDoneEvent(
@@ -2392,7 +2442,7 @@ async function buildSimulatedResponsesStreamResponse(
       };
       writeDataEvent(buildResponseCompletedEvent(completed));
       services.responseStore.set(responseId, completed, conversationId);
-      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      enqueueSseDoneEvent(controller, encoder);
       controller.close();
     },
   });
@@ -2402,7 +2452,7 @@ async function buildSimulatedResponsesStreamResponse(
   headers.set("connection", "keep-alive");
   headers.set("x-m365-conversation-id", conversationId);
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
-  return new Response(stream, { status: 200, headers });
+  return finalizeOutgoingStreamResponse(services, stream, headers);
 }
 
 function extractResponseOutputText(outputItems: unknown[]): string {
@@ -2777,6 +2827,14 @@ async function transformGraphStreamToResponses(
           buildMessageOutputItem(messageItemId, "", "in_progress"),
         ),
       );
+      writeDataEvent(
+        buildResponseContentPartAddedEvent(
+          responseId,
+          0,
+          messageItemId,
+          { type: "output_text", text: "" },
+        ),
+      );
 
       try {
         if (graphResponse.body) {
@@ -2829,6 +2887,14 @@ async function transformGraphStreamToResponses(
             emittedContent,
           ),
         );
+        writeDataEvent(
+          buildResponseContentPartDoneEvent(
+            responseId,
+            0,
+            messageItemId,
+            { type: "output_text", text: emittedContent },
+          ),
+        );
         const outputItem = buildMessageOutputItem(
           messageItemId,
           emittedContent,
@@ -2853,7 +2919,7 @@ async function transformGraphStreamToResponses(
           "graph_error",
         );
       } finally {
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        enqueueSseDoneEvent(controller, encoder);
         controller.close();
       }
     },
@@ -2864,7 +2930,7 @@ async function transformGraphStreamToResponses(
   headers.set("connection", "keep-alive");
   headers.set("x-m365-conversation-id", initialConversationId);
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
-  return new Response(stream, { status: 200, headers });
+  return finalizeOutgoingStreamResponse(services, stream, headers);
 }
 
 async function streamSubstrateAsResponses(
@@ -2922,6 +2988,14 @@ async function streamSubstrateAsResponses(
           buildMessageOutputItem(messageItemId, "", "in_progress"),
         ),
       );
+      writeDataEvent(
+        buildResponseContentPartAddedEvent(
+          responseId,
+          0,
+          messageItemId,
+          { type: "output_text", text: "" },
+        ),
+      );
 
       const substrateResponse = await services.substrateClient.chatStream(
         authorizationHeader,
@@ -2958,7 +3032,7 @@ async function streamSubstrateAsResponses(
             : "Substrate chat request failed.",
           "substrate_error",
         );
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        enqueueSseDoneEvent(controller, encoder);
         controller.close();
         return;
       }
@@ -2985,6 +3059,14 @@ async function streamSubstrateAsResponses(
       writeDataEvent(
         buildResponseOutputTextDoneEvent(responseId, 0, messageItemId, emitted),
       );
+      writeDataEvent(
+        buildResponseContentPartDoneEvent(
+          responseId,
+          0,
+          messageItemId,
+          { type: "output_text", text: emitted },
+        ),
+      );
       const outputItem = buildMessageOutputItem(messageItemId, emitted, "completed");
       writeDataEvent(buildResponseOutputItemDoneEvent(responseId, 0, outputItem));
 
@@ -2999,7 +3081,7 @@ async function streamSubstrateAsResponses(
       );
       writeDataEvent(buildResponseCompletedEvent(completed));
       services.responseStore.set(responseId, completed, conversationId);
-      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      enqueueSseDoneEvent(controller, encoder);
       controller.close();
     },
   });
@@ -3009,7 +3091,7 @@ async function streamSubstrateAsResponses(
   headers.set("connection", "keep-alive");
   headers.set("x-m365-conversation-id", initialConversationId);
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
-  return new Response(stream, { status: 200, headers });
+  return finalizeOutgoingStreamResponse(services, stream, headers);
 }
 
 async function resolveAuthorizationHeader(
@@ -3140,6 +3222,125 @@ function enqueueSseJsonEvent(
   controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
 }
 
+function enqueueSseDoneEvent(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder,
+): void {
+  controller.enqueue(encoder.encode("event: done\ndata: [DONE]\n\n"));
+}
+
+const MaxLoggedOutgoingStreamBodyChars = 1_000_000;
+
+function finalizeOutgoingStreamResponse(
+  services: Services,
+  stream: ReadableStream<Uint8Array>,
+  headers: Headers,
+): Response {
+  const response = new Response(stream, { status: 200, headers });
+  if (services.options.logStreamingResponseBody !== true || !response.body) {
+    return response;
+  }
+
+  const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+  if (!contentType.includes("text/event-stream")) {
+    return response;
+  }
+
+  const [clientBody, loggerBody] = response.body.tee();
+  const responseHeaders = new Headers(response.headers);
+  void captureOutgoingStreamBodyForDebug(
+    services,
+    response.status,
+    responseHeaders,
+    loggerBody,
+  );
+
+  return new Response(clientBody, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: responseHeaders,
+  });
+}
+
+async function captureOutgoingStreamBodyForDebug(
+  services: Services,
+  statusCode: number,
+  headers: Headers,
+  body: ReadableStream<Uint8Array>,
+): Promise<void> {
+  try {
+    const captured = await readStreamTextWithLimit(
+      body,
+      MaxLoggedOutgoingStreamBodyChars,
+    );
+    await services.debugLogger.logOutgoingStreamBody(
+      statusCode,
+      headers.entries(),
+      captured,
+    );
+  } catch {
+    // Best-effort debug capture should never impact the live stream.
+  }
+}
+
+async function readStreamTextWithLimit(
+  stream: ReadableStream<Uint8Array>,
+  maxChars: number,
+): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let truncated = false;
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+
+      const chunk = decoder.decode(value, { stream: true });
+      if (truncated || !chunk) {
+        continue;
+      }
+
+      if (text.length + chunk.length <= maxChars) {
+        text += chunk;
+        continue;
+      }
+
+      const remaining = Math.max(maxChars - text.length, 0);
+      if (remaining > 0) {
+        text += chunk.slice(0, remaining);
+      }
+      truncated = true;
+    }
+
+    const finalChunk = decoder.decode();
+    if (!truncated && finalChunk) {
+      if (text.length + finalChunk.length <= maxChars) {
+        text += finalChunk;
+      } else {
+        const remaining = Math.max(maxChars - text.length, 0);
+        if (remaining > 0) {
+          text += finalChunk.slice(0, remaining);
+        }
+        truncated = true;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (truncated) {
+    return `${text}\n\n[stream body truncated in debug log]`;
+  }
+  return text;
+}
+
 async function buildAssistantStreamResponse(
   services: Services,
   model: string,
@@ -3197,7 +3398,7 @@ async function buildAssistantStreamResponse(
   headers.set("connection", "keep-alive");
   headers.set("x-m365-conversation-id", conversationId);
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
-  return new Response(stream, { status: 200, headers });
+  return finalizeOutgoingStreamResponse(services, stream, headers);
 }
 
 async function transformGraphStreamToOpenAi(
@@ -3282,7 +3483,7 @@ async function transformGraphStreamToOpenAi(
   headers.set("cache-control", "no-cache");
   headers.set("connection", "keep-alive");
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
-  return new Response(stream, { status: 200, headers });
+  return finalizeOutgoingStreamResponse(services, stream, headers);
 }
 
 async function streamSubstrateAsSimulatedOpenAi(
@@ -3782,7 +3983,7 @@ async function streamSubstrateAsSimulatedOpenAi(
   headers.set("connection", "keep-alive");
   headers.set("x-m365-conversation-id", initialConversationId);
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
-  return new Response(stream, { status: 200, headers });
+  return finalizeOutgoingStreamResponse(services, stream, headers);
 }
 
 async function streamSubstrateAsOpenAi(
@@ -3920,5 +4121,5 @@ async function streamSubstrateAsOpenAi(
   headers.set("connection", "keep-alive");
   headers.set("x-m365-conversation-id", initialConversationId);
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
-  return new Response(stream, { status: 200, headers });
+  return finalizeOutgoingStreamResponse(services, stream, headers);
 }

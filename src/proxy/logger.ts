@@ -82,6 +82,28 @@ export class DebugMarkdownLogger {
     );
   }
 
+  async logOutgoingStreamBody(
+    statusCode: number,
+    headers: Iterable<[string, string]>,
+    rawBody: string,
+  ): Promise<void> {
+    if (
+      this.options.logStreamingResponseBody !== true ||
+      !this.isLevelEnabled("debug")
+    ) {
+      return;
+    }
+
+    await this.logHttpLike(
+      "Outgoing Stream Body",
+      [["Status", String(statusCode)]],
+      [...headers],
+      rawBody,
+      "outgoing-stream-body",
+      statusCode,
+    );
+  }
+
   async logUpstreamRequest(
     method: string,
     uri: string,

@@ -14,7 +14,12 @@ import {
   type JsonObject,
   type WrapperOptions,
 } from "../src/proxy/types";
-import { readSseEvents, tryGetString, tryParseJsonObject } from "../src/proxy/utils";
+import {
+  isJsonObject,
+  readSseEvents,
+  tryGetString,
+  tryParseJsonObject,
+} from "../src/proxy/utils";
 
 describe("simulated transform mode proxy flow", () => {
   test("GET /v1/models returns all supported models", async () => {
@@ -789,6 +794,215 @@ describe("simulated transform mode proxy flow", () => {
     const body = (await createResponse.json()) as JsonObject;
     expect(body.id).toBe("resp_simulated_role_content");
     expect(body.output_text).toBe("hello from role/content item");
+  });
+
+  test("responses request-hash guard suppresses duplicate identical requests", async () => {
+    let chatCallCount = 0;
+    const app = createProxyApp(
+      createServices((conversationId, payload) => {
+        chatCallCount += 1;
+        return buildGraphChatResult(
+          conversationId,
+          payload,
+          toMarkdownJson({
+            id: "resp_hash_guard_first",
+            object: "response",
+            created_at: 1700000000,
+            status: "completed",
+            model: "simulated-model",
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: "hello once" }],
+              },
+            ],
+            output_text: "hello once",
+          }),
+        );
+      }),
+    );
+
+    const requestBody = {
+      model: "m365-copilot",
+      stream: false,
+      input: [{ role: "user", content: [{ type: "input_text", text: "Hi" }] }],
+    };
+
+    const first = await app.fetch(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-m365-transport": TransportNames.Graph,
+        },
+        body: JSON.stringify(requestBody),
+      }),
+    );
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as JsonObject;
+    expect(tryGetString(firstBody, "output_text")).toBe("hello once");
+
+    const second = await app.fetch(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-m365-transport": TransportNames.Graph,
+        },
+        body: JSON.stringify(requestBody),
+      }),
+    );
+
+    expect(second.status).toBe(200);
+    expect(chatCallCount).toBe(1);
+    expect(second.headers.get("x-m365-request-hash-replayed")).toBe("true");
+    expect(second.headers.get("x-m365-replay-suppressed")).toBe("true");
+    const secondBody = (await second.json()) as JsonObject;
+    expect(tryGetString(secondBody, "status")).toBe("completed");
+    expect(Array.isArray(secondBody.output)).toBeTrue();
+    expect((secondBody.output as unknown[]).length).toBe(0);
+    expect(tryGetString(secondBody, "output_text") ?? "").toBe("");
+  });
+
+  test("responses short-circuits repeated trailing assistant replay loop for non-stream requests", async () => {
+    let chatCallCount = 0;
+    const app = createProxyApp(
+      createServices((conversationId, payload) => {
+        chatCallCount += 1;
+        return buildGraphChatResult(
+          conversationId,
+          payload,
+          toMarkdownJson({
+            id: "resp_should_not_be_used",
+            object: "response",
+            output: [{ type: "output_text", text: "unused" }],
+          }),
+        );
+      }),
+    );
+
+    const response = await app.fetch(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-m365-transport": TransportNames.Graph,
+        },
+        body: JSON.stringify({
+          model: "m365-copilot",
+          stream: false,
+          input: [
+            {
+              role: "user",
+              content: [{ type: "input_text", text: "Hi" }],
+            },
+            {
+              role: "assistant",
+              content: [{ type: "output_text", text: "Hi" }],
+            },
+            {
+              role: "assistant",
+              content: [{ type: "output_text", text: "Hi" }],
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(chatCallCount).toBe(0);
+    expect(response.headers.get("x-m365-replay-suppressed")).toBe("true");
+    const body = (await response.json()) as JsonObject;
+    expect(tryGetString(body, "object")).toBe("response");
+    expect(tryGetString(body, "status")).toBe("completed");
+    expect(Array.isArray(body.output)).toBeTrue();
+    expect((body.output as unknown[]).length).toBe(0);
+    expect(tryGetString(body, "output_text") ?? "").toBe("");
+  });
+
+  test("responses short-circuits repeated trailing assistant replay loop for streaming requests", async () => {
+    let chatCallCount = 0;
+    const app = createProxyApp(
+      createServices((conversationId, payload) => {
+        chatCallCount += 1;
+        return buildGraphChatResult(
+          conversationId,
+          payload,
+          toMarkdownJson({
+            id: "resp_should_not_be_used",
+            object: "response",
+            output: [{ type: "output_text", text: "unused" }],
+          }),
+        );
+      }),
+    );
+
+    const response = await app.fetch(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-m365-transport": TransportNames.Graph,
+        },
+        body: JSON.stringify({
+          model: "m365-copilot",
+          stream: true,
+          input: [
+            {
+              role: "user",
+              content: [{ type: "input_text", text: "Hi" }],
+            },
+            {
+              role: "assistant",
+              content: [{ type: "output_text", text: "Hi" }],
+            },
+            {
+              role: "assistant",
+              content: [{ type: "output_text", text: "Hi" }],
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(chatCallCount).toBe(0);
+    expect(response.headers.get("x-m365-replay-suppressed")).toBe("true");
+    const contentType = response.headers.get("content-type") ?? "";
+    expect(contentType.includes("text/event-stream")).toBeTrue();
+    expect(response.body).not.toBeNull();
+
+    const eventTypes: string[] = [];
+    let completedResponse: JsonObject | null = null;
+    for await (const event of readSseEvents(response.body!)) {
+      const data = event.data.trim();
+      if (!data) {
+        continue;
+      }
+      const parsed = tryParseJsonObject(data);
+      if (!parsed) {
+        continue;
+      }
+      const type = tryGetString(parsed, "type");
+      if (!type) {
+        continue;
+      }
+      eventTypes.push(type);
+      if (type === "response.completed" && isJsonObject(parsed.response)) {
+        completedResponse = parsed.response as JsonObject;
+      }
+    }
+
+    expect(eventTypes).toContain("response.created");
+    expect(eventTypes).toContain("response.in_progress");
+    expect(eventTypes).toContain("response.completed");
+    expect(isJsonObject(completedResponse)).toBeTrue();
+    const completed = completedResponse as JsonObject;
+    expect(tryGetString(completed, "status")).toBe("completed");
+    expect(Array.isArray(completed.output)).toBeTrue();
+    expect((completed.output as unknown[]).length).toBe(0);
+    expect(tryGetString(completed, "output_text") ?? "").toBe("");
   });
 
   test("chat/completions normalizes top-level choice-shaped payload into choices array", async () => {

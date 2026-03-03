@@ -10,9 +10,16 @@ type ConversationLinkEntry = {
   expiresAtUtc: number;
 };
 
+type RequestHashEntry = {
+  expiresAtUtc: number;
+};
+
+const RequestHashGuardTtlMs = 60_000;
+
 export class ResponseStore {
   private readonly entries = new Map<string, StoredOpenAiResponseRecord>();
   private readonly conversationLinks = new Map<string, ConversationLinkEntry>();
+  private readonly requestHashes = new Map<string, RequestHashEntry>();
 
   constructor(private readonly options: WrapperOptions) {}
 
@@ -109,6 +116,34 @@ export class ResponseStore {
     return entry.conversationId;
   }
 
+  hasRecentRequestHash(requestHash: string): boolean {
+    const normalizedHash = requestHash.trim();
+    if (!normalizedHash) {
+      return false;
+    }
+    this.purgeExpired();
+    const entry = this.requestHashes.get(normalizedHash);
+    if (!entry) {
+      return false;
+    }
+    if (entry.expiresAtUtc <= Date.now()) {
+      this.requestHashes.delete(normalizedHash);
+      return false;
+    }
+    return true;
+  }
+
+  rememberRequestHash(requestHash: string): void {
+    const normalizedHash = requestHash.trim();
+    if (!normalizedHash) {
+      return;
+    }
+    this.purgeExpired();
+    this.requestHashes.set(normalizedHash, {
+      expiresAtUtc: Date.now() + RequestHashGuardTtlMs,
+    });
+  }
+
   private resolveExpiryMs(): number {
     const ttlMinutes = this.options.conversationTtlMinutes;
     if (ttlMinutes <= 0) {
@@ -133,6 +168,15 @@ export class ResponseStore {
       for (const [id, entry] of this.conversationLinks.entries()) {
         if (entry.expiresAtUtc <= now) {
           this.conversationLinks.delete(id);
+        }
+      }
+    }
+
+    if (this.requestHashes.size > 0) {
+      const now = Date.now();
+      for (const [hash, entry] of this.requestHashes.entries()) {
+        if (entry.expiresAtUtc <= now) {
+          this.requestHashes.delete(hash);
         }
       }
     }

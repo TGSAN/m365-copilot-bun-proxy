@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import {
   CopilotGraphClient,
@@ -769,6 +769,30 @@ async function handleResponsesCreate(
   const responseHeaders = new Headers({
     "x-m365-transport": selectedTransport,
   });
+  const requestHash = computeResponsesRequestHash(
+    payload.rawText,
+    payload.json,
+    selectedTransport,
+  );
+  if (responseStore.hasRecentRequestHash(requestHash)) {
+    responseHeaders.set("x-m365-request-hash-replayed", "true");
+    return buildSuppressedReplayResponsesResult(
+      services,
+      parsedRequest,
+      responseHeaders,
+    );
+  }
+  const repeatedAssistantReplay = detectRepeatedAssistantTailReplay(
+    parsedRequest.inputItemsForStorage,
+  );
+  if (repeatedAssistantReplay) {
+    responseStore.rememberRequestHash(requestHash);
+    return buildSuppressedReplayResponsesResult(
+      services,
+      parsedRequest,
+      responseHeaders,
+    );
+  }
   const conversationSelection = selectConversation(
     request,
     payload.json,
@@ -1007,6 +1031,7 @@ async function handleResponsesCreate(
             "invalid_simulated_payload",
           );
         }
+        responseStore.rememberRequestHash(requestHash);
         return buildSimulatedResponsesStreamResponse(
           services,
           parsedRequest,
@@ -1061,6 +1086,7 @@ async function handleResponsesCreate(
       if (strictToolError) {
         return strictToolError;
       }
+      responseStore.rememberRequestHash(requestHash);
       return buildBufferedResponsesStreamResponse(
         services,
         parsedRequest,
@@ -1085,6 +1111,7 @@ async function handleResponsesCreate(
           "graph_error",
         );
       }
+      responseStore.rememberRequestHash(requestHash);
       return transformGraphStreamToResponses(
         services,
         graphResponse,
@@ -1095,6 +1122,7 @@ async function handleResponsesCreate(
       );
     }
 
+    responseStore.rememberRequestHash(requestHash);
     return streamSubstrateAsResponses(
       services,
       authorizationHeader,
@@ -1213,6 +1241,7 @@ async function handleResponsesCreate(
     }
 
     responseStore.set(normalized.responseId, normalized.responseBody, conversationId);
+    responseStore.rememberRequestHash(requestHash);
     responseHeaders.set("content-type", "application/json");
     const body = JSON.stringify(normalized.responseBody);
     await debugLogger.logOutgoingResponse(200, responseHeaders.entries(), body);
@@ -1277,6 +1306,7 @@ async function handleResponsesCreate(
     conversationId,
   );
   responseStore.set(responseId, responseBody, conversationId);
+  responseStore.rememberRequestHash(requestHash);
 
   responseHeaders.set("content-type", "application/json");
   const body = JSON.stringify(responseBody);
@@ -1407,6 +1437,62 @@ async function handleResponsesDelete(
   });
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), body);
   return new Response(body, { status: 200, headers });
+}
+
+async function buildSuppressedReplayResponsesResult(
+  services: Services,
+  parsedRequest: ParsedResponsesRequest,
+  headers: Headers,
+): Promise<Response> {
+  const responseId = createOpenAiResponseId();
+  const createdAt = nowUnix();
+  const inProgress = buildOpenAiResponseObject(
+    responseId,
+    createdAt,
+    parsedRequest.base.model,
+    "in_progress",
+    [],
+    parsedRequest,
+    null,
+  );
+  const completed = buildOpenAiResponseObject(
+    responseId,
+    createdAt,
+    parsedRequest.base.model,
+    "completed",
+    [],
+    parsedRequest,
+    null,
+  );
+  services.responseStore.set(responseId, completed, null);
+  headers.set("x-m365-replay-suppressed", "true");
+
+  if (!parsedRequest.base.stream) {
+    headers.set("content-type", "application/json");
+    const body = JSON.stringify(completed);
+    await services.debugLogger.logOutgoingResponse(200, headers.entries(), body);
+    return new Response(body, { status: 200, headers });
+  }
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder();
+      const writeDataEvent = (event: JsonObject) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      };
+
+      writeDataEvent(buildResponseCreatedEvent(inProgress));
+      writeDataEvent(buildResponseInProgressEvent(inProgress));
+      writeDataEvent(buildResponseCompletedEvent(completed));
+      controller.close();
+    },
+  });
+
+  headers.set("content-type", "text/event-stream");
+  headers.set("cache-control", "no-cache");
+  headers.set("connection", "keep-alive");
+  await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
+  return new Response(stream, { status: 200, headers });
 }
 
 async function buildBufferedResponsesStreamResponse(
@@ -2204,6 +2290,108 @@ function extractResponseOutputText(outputItems: unknown[]): string {
     }
   }
   return textParts.join("");
+}
+
+function computeResponsesRequestHash(
+  rawRequestText: string | null,
+  requestJson: JsonObject,
+  transport: string,
+): string {
+  const payloadText =
+    rawRequestText?.trim() && rawRequestText.trim().length > 0
+      ? rawRequestText
+      : JSON.stringify(requestJson);
+  return createHash("sha256")
+    .update(transport)
+    .update("\n")
+    .update(payloadText)
+    .digest("hex");
+}
+
+function detectRepeatedAssistantTailReplay(inputItems: unknown[]): string | null {
+  if (!Array.isArray(inputItems) || inputItems.length < 2) {
+    return null;
+  }
+
+  const trailingAssistantTexts: string[] = [];
+  for (let index = inputItems.length - 1; index >= 0; index -= 1) {
+    const text = extractAssistantInputItemText(inputItems[index]);
+    if (!text) {
+      break;
+    }
+    trailingAssistantTexts.push(text);
+  }
+
+  if (trailingAssistantTexts.length < 2) {
+    return null;
+  }
+
+  const latest = trailingAssistantTexts[0];
+  for (const prior of trailingAssistantTexts.slice(1)) {
+    if (prior !== latest) {
+      return null;
+    }
+  }
+
+  return latest;
+}
+
+function extractAssistantInputItemText(inputItem: unknown): string | null {
+  if (!isJsonObject(inputItem)) {
+    return null;
+  }
+
+  const role = (tryGetString(inputItem, "role") ?? "").toLowerCase();
+  if (role !== "assistant") {
+    return null;
+  }
+
+  const content = inputItem.content;
+  if (typeof content === "string") {
+    const text = content.trim();
+    return text ? text : null;
+  }
+
+  if (Array.isArray(content)) {
+    const textParts: string[] = [];
+    for (const part of content) {
+      if (typeof part === "string") {
+        if (part.trim()) {
+          textParts.push(part);
+        }
+        continue;
+      }
+      if (!isJsonObject(part)) {
+        continue;
+      }
+      const partType = (tryGetString(part, "type") ?? "").toLowerCase();
+      if (
+        partType &&
+        partType !== "output_text" &&
+        partType !== "text" &&
+        partType !== "input_text"
+      ) {
+        continue;
+      }
+      const text =
+        tryGetString(part, "text") ??
+        tryGetString(part, "output_text") ??
+        tryGetString(part, "input_text");
+      if (text?.trim()) {
+        textParts.push(text);
+      }
+    }
+    const combined = textParts.join("").trim();
+    return combined ? combined : null;
+  }
+
+  const fallback =
+    tryGetString(inputItem, "output_text") ?? tryGetString(inputItem, "text");
+  if (!fallback) {
+    return null;
+  }
+  const normalized = fallback.trim();
+  return normalized ? normalized : null;
 }
 
 function normalizeSimulatedResponseOutputItems(outputItems: unknown[]): JsonObject[] {

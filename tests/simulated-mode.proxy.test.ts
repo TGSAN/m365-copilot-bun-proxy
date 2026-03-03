@@ -709,6 +709,88 @@ describe("simulated transform mode proxy flow", () => {
     expect(body.output_text).toBe("hello from responses mode");
   });
 
+  test("responses non-stream normalizes output_text output items", async () => {
+    const simulatedResponse: JsonObject = {
+      id: "resp_simulated_output_text_item",
+      object: "response",
+      created_at: 1700000000,
+      status: "completed",
+      model: "simulated-model",
+      output: [{ type: "output_text", text: "hello from output_text item" }],
+    };
+
+    const app = createProxyApp(
+      createServices((conversationId, payload) =>
+        buildGraphChatResult(
+          conversationId,
+          payload,
+          toMarkdownJson(simulatedResponse),
+        ),
+      ),
+    );
+
+    const createResponse = await app.fetch(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-m365-transport": TransportNames.Graph,
+        },
+        body: JSON.stringify({
+          model: "m365-copilot",
+          stream: false,
+          input: "Say hello.",
+        }),
+      }),
+    );
+
+    expect(createResponse.status).toBe(200);
+    const body = (await createResponse.json()) as JsonObject;
+    expect(body.id).toBe("resp_simulated_output_text_item");
+    expect(body.output_text).toBe("hello from output_text item");
+  });
+
+  test("responses non-stream normalizes assistant role/content output items", async () => {
+    const simulatedResponse: JsonObject = {
+      id: "resp_simulated_role_content",
+      object: "response",
+      created_at: 1700000000,
+      status: "completed",
+      model: "simulated-model",
+      output: [{ role: "assistant", content: "hello from role/content item" }],
+    };
+
+    const app = createProxyApp(
+      createServices((conversationId, payload) =>
+        buildGraphChatResult(
+          conversationId,
+          payload,
+          toMarkdownJson(simulatedResponse),
+        ),
+      ),
+    );
+
+    const createResponse = await app.fetch(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-m365-transport": TransportNames.Graph,
+        },
+        body: JSON.stringify({
+          model: "m365-copilot",
+          stream: false,
+          input: "Say hello.",
+        }),
+      }),
+    );
+
+    expect(createResponse.status).toBe(200);
+    const body = (await createResponse.json()) as JsonObject;
+    expect(body.id).toBe("resp_simulated_role_content");
+    expect(body.output_text).toBe("hello from role/content item");
+  });
+
   test("chat/completions normalizes top-level choice-shaped payload into choices array", async () => {
     const malformedChoiceShape: JsonObject = {
       index: 0,

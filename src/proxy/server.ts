@@ -1694,9 +1694,6 @@ function buildChoiceFromResponsesShape(payload: JsonObject): JsonObject | null {
       }
       continue;
     }
-    if (type !== "message") {
-      continue;
-    }
     const text = extractMessageOutputText(item);
     if (text) {
       messageText = text;
@@ -1917,12 +1914,15 @@ function normalizeSimulatedResponsesPayload(
     const outputText =
       tryGetString(responseBody, "output_text") ??
       tryGetString(responseBody, "text") ??
+      extractTextFromSimulatedChoices(responseBody) ??
       "";
     responseBody.output = [
       buildMessageOutputItem(createOpenAiOutputItemId("msg"), outputText, "completed"),
     ];
+  } else {
+    responseBody.output = normalizeSimulatedResponseOutputItems(responseBody.output);
   }
-  if (responseBody.output_text === undefined) {
+  if (!tryGetString(responseBody, "output_text")?.trim()) {
     responseBody.output_text = extractResponseOutputText(
       Array.isArray(responseBody.output) ? responseBody.output : [],
     );
@@ -1952,7 +1952,7 @@ function hasUsableSimulatedResponsesPayload(responseBody: JsonObject): boolean {
     if (type === "function_call") {
       return true;
     }
-    if (type === "message" && extractMessageOutputText(item).trim()) {
+    if (extractMessageOutputText(item).trim()) {
       return true;
     }
   }
@@ -1990,7 +1990,7 @@ function shouldRetrySimulatedToollessResponsesPayload(
       hasFunctionCall = true;
       break;
     }
-    if (type === "message" && extractMessageOutputText(item).trim()) {
+    if (extractMessageOutputText(item).trim()) {
       hasMessageText = true;
     }
   }
@@ -2206,25 +2206,110 @@ function extractResponseOutputText(outputItems: unknown[]): string {
   return textParts.join("");
 }
 
+function normalizeSimulatedResponseOutputItems(outputItems: unknown[]): JsonObject[] {
+  const normalized: JsonObject[] = [];
+
+  for (const item of outputItems) {
+    if (typeof item === "string") {
+      const text = item.trim();
+      if (!text) {
+        continue;
+      }
+      normalized.push(
+        buildMessageOutputItem(createOpenAiOutputItemId("msg"), text, "completed"),
+      );
+      continue;
+    }
+
+    if (!isJsonObject(item)) {
+      continue;
+    }
+
+    const type = (tryGetString(item, "type") ?? "").toLowerCase();
+    if (type === "function_call") {
+      normalized.push(item);
+      continue;
+    }
+
+    const text = extractMessageOutputText(item).trim();
+    if (!text) {
+      normalized.push(item);
+      continue;
+    }
+
+    const id = tryGetString(item, "id") ?? createOpenAiOutputItemId("msg");
+    const status = tryGetString(item, "status") ?? "completed";
+    normalized.push(buildMessageOutputItem(id, text, status));
+  }
+
+  return normalized;
+}
+
+function extractTextFromSimulatedChoices(payload: JsonObject): string | null {
+  const choices = payload.choices;
+  if (!Array.isArray(choices)) {
+    return null;
+  }
+
+  for (const choice of choices) {
+    if (!isJsonObject(choice)) {
+      continue;
+    }
+    const messageNode = choice.message;
+    if (!isJsonObject(messageNode)) {
+      continue;
+    }
+    const text = extractMessageOutputText(messageNode).trim();
+    if (text) {
+      return text;
+    }
+  }
+
+  return null;
+}
+
 function extractMessageOutputText(outputItem: JsonObject): string {
-  if ((tryGetString(outputItem, "type") ?? "").toLowerCase() !== "message") {
+  const type = (tryGetString(outputItem, "type") ?? "").toLowerCase();
+  if (type === "function_call") {
     return "";
   }
+
+  if (type === "output_text" || type === "text") {
+    return (
+      tryGetString(outputItem, "text") ?? tryGetString(outputItem, "output_text") ?? ""
+    );
+  }
+
+  const directText = tryGetString(outputItem, "output_text");
+  if (directText) {
+    return directText;
+  }
+
   const content = outputItem.content;
+  if (typeof content === "string") {
+    return content;
+  }
+
   if (!Array.isArray(content)) {
-    return "";
+    return tryGetString(outputItem, "text") ?? "";
   }
 
   const textParts: string[] = [];
   for (const part of content) {
+    if (typeof part === "string") {
+      if (part) {
+        textParts.push(part);
+      }
+      continue;
+    }
     if (!isJsonObject(part)) {
       continue;
     }
-    const type = (tryGetString(part, "type") ?? "").toLowerCase();
-    if (type !== "output_text" && type !== "text") {
+    const partType = (tryGetString(part, "type") ?? "").toLowerCase();
+    if (partType && partType !== "output_text" && partType !== "text") {
       continue;
     }
-    const text = tryGetString(part, "text");
+    const text = tryGetString(part, "text") ?? tryGetString(part, "output_text");
     if (text) {
       textParts.push(text);
     }

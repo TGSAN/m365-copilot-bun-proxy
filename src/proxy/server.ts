@@ -774,6 +774,7 @@ async function handleResponsesCreate(
     payload.json,
     selectedTransport,
   );
+  const replayResponseId = buildReplayResponseIdFromHash(requestHash);
   const suppressedConversationId = resolveSuppressedResponsesConversationId(
     request,
     payload.json,
@@ -781,6 +782,9 @@ async function handleResponsesCreate(
     selectedTransport,
     conversationStore,
     responseStore,
+  );
+  const trailingAssistantReplay = detectAssistantTailReplayWithoutNewUserTurn(
+    parsedRequest.inputItemsForStorage,
   );
   if (responseStore.hasRecentRequestHash(requestHash)) {
     responseHeaders.set("x-m365-request-hash-replayed", "true");
@@ -792,18 +796,19 @@ async function handleResponsesCreate(
       parsedRequest,
       responseHeaders,
       replayConversationId,
+      trailingAssistantReplay,
+      replayResponseId,
     );
   }
-  const repeatedAssistantReplay = detectRepeatedAssistantTailReplay(
-    parsedRequest.inputItemsForStorage,
-  );
-  if (repeatedAssistantReplay) {
+  if (trailingAssistantReplay) {
     responseStore.rememberRequestHash(requestHash, suppressedConversationId);
     return buildSuppressedReplayResponsesResult(
       services,
       parsedRequest,
       responseHeaders,
       suppressedConversationId,
+      trailingAssistantReplay,
+      replayResponseId,
     );
   }
   const conversationSelection = selectConversation(
@@ -1457,12 +1462,30 @@ async function buildSuppressedReplayResponsesResult(
   parsedRequest: ParsedResponsesRequest,
   headers: Headers,
   conversationId: string | null,
+  replayText: string | null,
+  replayResponseId: string | null = null,
 ): Promise<Response> {
-  const responseId = createOpenAiResponseId();
+  const responseId = replayResponseId?.trim()
+    ? replayResponseId.trim()
+    : createOpenAiResponseId();
   const createdAt = nowUnix();
   const includeConversationId = services.options.includeConversationIdInResponseBody;
-  const responseConversationId =
-    includeConversationId && conversationId?.trim() ? conversationId.trim() : null;
+  const normalizedConversationId = conversationId?.trim()
+    ? conversationId.trim()
+    : null;
+  const responseConversationId = includeConversationId
+    ? normalizedConversationId
+    : null;
+  const replayTextValue = replayText?.trim() ? replayText : null;
+  const outputItems = replayTextValue
+    ? [
+        buildMessageOutputItem(
+          createOpenAiOutputItemId("msg"),
+          replayTextValue,
+          "completed",
+        ),
+      ]
+    : [];
   const inProgress = buildOpenAiResponseObject(
     responseId,
     createdAt,
@@ -1477,14 +1500,14 @@ async function buildSuppressedReplayResponsesResult(
     createdAt,
     parsedRequest.base.model,
     "completed",
-    [],
+    outputItems,
     parsedRequest,
     responseConversationId,
   );
-  services.responseStore.set(responseId, completed, responseConversationId);
+  services.responseStore.set(responseId, completed, normalizedConversationId);
   headers.set("x-m365-replay-suppressed", "true");
-  if (responseConversationId) {
-    headers.set("x-m365-conversation-id", responseConversationId);
+  if (normalizedConversationId) {
+    headers.set("x-m365-conversation-id", normalizedConversationId);
   }
 
   if (!parsedRequest.base.stream) {
@@ -1503,7 +1526,40 @@ async function buildSuppressedReplayResponsesResult(
 
       writeDataEvent(buildResponseCreatedEvent(inProgress));
       writeDataEvent(buildResponseInProgressEvent(inProgress));
+      for (let index = 0; index < outputItems.length; index += 1) {
+        const outputItem = outputItems[index];
+        const outputItemId = String(outputItem.id ?? createOpenAiOutputItemId("msg"));
+        writeDataEvent(
+          buildResponseOutputItemAddedEvent(
+            responseId,
+            index,
+            buildMessageOutputItem(outputItemId, "", "in_progress"),
+          ),
+        );
+        if (replayTextValue) {
+          writeDataEvent(
+            buildResponseOutputTextDeltaEvent(
+              responseId,
+              index,
+              outputItemId,
+              replayTextValue,
+            ),
+          );
+        }
+        writeDataEvent(
+          buildResponseOutputTextDoneEvent(
+            responseId,
+            index,
+            outputItemId,
+            replayTextValue ?? "",
+          ),
+        );
+        writeDataEvent(
+          buildResponseOutputItemDoneEvent(responseId, index, outputItem),
+        );
+      }
       writeDataEvent(buildResponseCompletedEvent(completed));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
       controller.close();
     },
   });
@@ -1622,6 +1678,7 @@ async function buildBufferedResponsesStreamResponse(
           "response_stream_error",
         );
       } finally {
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       }
     },
@@ -2287,6 +2344,7 @@ async function buildSimulatedResponsesStreamResponse(
       };
       writeDataEvent(buildResponseCompletedEvent(completed));
       services.responseStore.set(responseId, completed, conversationId);
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
       controller.close();
     },
   });
@@ -2329,6 +2387,10 @@ function computeResponsesRequestHash(
     .digest("hex");
 }
 
+function buildReplayResponseIdFromHash(requestHash: string): string {
+  return `resp_replay_${requestHash.slice(0, 24)}`;
+}
+
 function resolveSuppressedResponsesConversationId(
   request: Request,
   requestJson: JsonObject,
@@ -2363,32 +2425,31 @@ function resolveSuppressedResponsesConversationId(
   return conversationStore.tryGet(scopedConversationKey);
 }
 
-function detectRepeatedAssistantTailReplay(inputItems: unknown[]): string | null {
-  if (!Array.isArray(inputItems) || inputItems.length < 2) {
+function detectAssistantTailReplayWithoutNewUserTurn(
+  inputItems: unknown[],
+): string | null {
+  if (!Array.isArray(inputItems) || inputItems.length === 0) {
     return null;
   }
 
-  const trailingAssistantTexts: string[] = [];
-  for (let index = inputItems.length - 1; index >= 0; index -= 1) {
-    const text = extractAssistantInputItemText(inputItems[index]);
-    if (!text) {
-      break;
-    }
-    trailingAssistantTexts.push(text);
-  }
-
-  if (trailingAssistantTexts.length < 2) {
+  const latestAssistantText = extractAssistantInputItemText(
+    inputItems[inputItems.length - 1],
+  );
+  if (!latestAssistantText) {
     return null;
   }
 
-  const latest = trailingAssistantTexts[0];
-  for (const prior of trailingAssistantTexts.slice(1)) {
-    if (prior !== latest) {
-      return null;
+  for (let index = inputItems.length - 2; index >= 0; index -= 1) {
+    const item = inputItems[index];
+    if (!isJsonObject(item)) {
+      continue;
+    }
+    const role = (tryGetString(item, "role") ?? "").toLowerCase();
+    if (role === "user") {
+      return latestAssistantText;
     }
   }
-
-  return latest;
+  return null;
 }
 
 function extractAssistantInputItemText(inputItem: unknown): string | null {
@@ -2690,6 +2751,7 @@ async function transformGraphStreamToResponses(
           "graph_error",
         );
       } finally {
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       }
     },
@@ -2794,6 +2856,7 @@ async function streamSubstrateAsResponses(
             : "Substrate chat request failed.",
           "substrate_error",
         );
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
         return;
       }
@@ -2834,6 +2897,7 @@ async function streamSubstrateAsResponses(
       );
       writeDataEvent(buildResponseCompletedEvent(completed));
       services.responseStore.set(responseId, completed, conversationId);
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
       controller.close();
     },
   });

@@ -996,6 +996,7 @@ describe("simulated transform mode proxy flow", () => {
     expect(second.headers.get("x-m365-conversation-id")).toBe("conv_simulated_1");
     const secondBody = (await second.json()) as JsonObject;
     expect(tryGetString(secondBody, "status")).toBe("completed");
+    expect(tryGetString(secondBody, "id")?.startsWith("resp_replay_")).toBeTrue();
     expect(tryGetString(secondBody, "conversation")).toBe("conv_simulated_1");
     expect(tryGetString(secondBody, "conversation_id")).toBe("conv_simulated_1");
     expect(Array.isArray(secondBody.output)).toBeTrue();
@@ -1065,8 +1066,10 @@ describe("simulated transform mode proxy flow", () => {
       "conv_replay_guard_non_stream",
     );
     expect(Array.isArray(body.output)).toBeTrue();
-    expect((body.output as unknown[]).length).toBe(0);
-    expect(tryGetString(body, "output_text") ?? "").toBe("");
+    expect((body.output as unknown[]).length).toBe(1);
+    expect(tryGetString(body, "output_text")).toBe("Hi");
+    const firstOutputItem = (body.output as JsonObject[])[0] as JsonObject;
+    expect(tryGetString(firstOutputItem, "type")).toBe("message");
   });
 
   test("responses short-circuits repeated trailing assistant replay loop for streaming requests", async () => {
@@ -1127,10 +1130,15 @@ describe("simulated transform mode proxy flow", () => {
 
     const eventTypes: string[] = [];
     let completedResponse: JsonObject | null = null;
+    let sawDone = false;
     for await (const event of readSseEvents(response.body!)) {
       const data = event.data.trim();
       if (!data) {
         continue;
+      }
+      if (data.toLowerCase() === "[done]") {
+        sawDone = true;
+        break;
       }
       const parsed = tryParseJsonObject(data);
       if (!parsed) {
@@ -1159,8 +1167,115 @@ describe("simulated transform mode proxy flow", () => {
       "conv_replay_guard_stream",
     );
     expect(Array.isArray(completed.output)).toBeTrue();
-    expect((completed.output as unknown[]).length).toBe(0);
-    expect(tryGetString(completed, "output_text") ?? "").toBe("");
+    expect((completed.output as unknown[]).length).toBe(1);
+    expect(tryGetString(completed, "output_text")).toBe("Hi");
+    expect(sawDone).toBeTrue();
+  });
+
+  test("responses suppresses replay loop even with a single trailing assistant message", async () => {
+    let chatCallCount = 0;
+    const app = createProxyApp(
+      createServices((conversationId, payload) => {
+        chatCallCount += 1;
+        return buildGraphChatResult(
+          conversationId,
+          payload,
+          toMarkdownJson({
+            id: "resp_should_not_be_used_single_assistant",
+            object: "response",
+            output: [{ type: "output_text", text: "unused" }],
+          }),
+        );
+      }),
+    );
+
+    const response = await app.fetch(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-m365-transport": TransportNames.Graph,
+        },
+        body: JSON.stringify({
+          model: "m365-copilot",
+          stream: false,
+          input: [
+            {
+              role: "user",
+              content: [{ type: "input_text", text: "Hi" }],
+            },
+            {
+              role: "assistant",
+              content: [{ type: "output_text", text: "Hi" }],
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(chatCallCount).toBe(0);
+    expect(response.headers.get("x-m365-replay-suppressed")).toBe("true");
+    const body = (await response.json()) as JsonObject;
+    expect(tryGetString(body, "status")).toBe("completed");
+    expect(Array.isArray(body.output)).toBeTrue();
+    expect((body.output as unknown[]).length).toBe(1);
+    expect(tryGetString(body, "output_text")).toBe("Hi");
+  });
+
+  test("responses replay suppression keeps conversation header when body conversation is disabled", async () => {
+    const app = createProxyApp(
+      createServices(
+        (conversationId, payload) =>
+          buildGraphChatResult(
+            conversationId,
+            payload,
+            toMarkdownJson({
+              id: "resp_should_not_be_used_header_only",
+              object: "response",
+              output: [{ type: "output_text", text: "unused" }],
+            }),
+          ),
+        (options) => {
+          options.includeConversationIdInResponseBody = false;
+        },
+      ),
+    );
+
+    const response = await app.fetch(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-m365-transport": TransportNames.Graph,
+        },
+        body: JSON.stringify({
+          model: "m365-copilot",
+          stream: false,
+          conversation: "conv_header_only_replay",
+          input: [
+            {
+              role: "user",
+              content: [{ type: "input_text", text: "Hi" }],
+            },
+            {
+              role: "assistant",
+              content: [{ type: "output_text", text: "Hi" }],
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-m365-replay-suppressed")).toBe("true");
+    expect(response.headers.get("x-m365-conversation-id")).toBe(
+      "conv_header_only_replay",
+    );
+    const body = (await response.json()) as JsonObject;
+    expect(tryGetString(body, "conversation")).toBeNull();
+    expect(tryGetString(body, "conversation_id")).toBeNull();
+    expect(tryGetString(body, "output_text")).toBe("Hi");
   });
 
   test("chat/completions normalizes top-level choice-shaped payload into choices array", async () => {
@@ -1931,8 +2046,12 @@ describe("simulated transform mode proxy flow", () => {
 
 function createServices(
   onChat: (conversationId: string, payload: JsonObject) => ChatResult,
+  configureOptions?: (options: WrapperOptions) => void,
 ): Parameters<typeof createProxyApp>[0] {
   const options = createOptions();
+  if (configureOptions) {
+    configureOptions(options);
+  }
   const conversationStore = new ConversationStore(options);
   const responseStore = new ResponseStore(options);
 

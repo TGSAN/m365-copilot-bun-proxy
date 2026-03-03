@@ -1067,7 +1067,7 @@ describe("simulated transform mode proxy flow", () => {
     );
     expect(Array.isArray(body.output)).toBeTrue();
     expect((body.output as unknown[]).length).toBe(1);
-    expect(tryGetString(body, "output_text") ?? "").toBe("");
+    expect(tryGetString(body, "output_text") ?? "").toBe("Hi");
   });
 
   test("responses short-circuits repeated trailing assistant replay loop for streaming requests", async () => {
@@ -1171,7 +1171,7 @@ describe("simulated transform mode proxy flow", () => {
     );
     expect(Array.isArray(completed.output)).toBeTrue();
     expect((completed.output as unknown[]).length).toBe(1);
-    expect(tryGetString(completed, "output_text") ?? "").toBe("");
+    expect(tryGetString(completed, "output_text") ?? "").toBe("Hi");
     expect(sawDone).toBeTrue();
   });
 
@@ -1223,7 +1223,7 @@ describe("simulated transform mode proxy flow", () => {
     expect(tryGetString(body, "status")).toBe("completed");
     expect(Array.isArray(body.output)).toBeTrue();
     expect((body.output as unknown[]).length).toBe(1);
-    expect(tryGetString(body, "output_text") ?? "").toBe("");
+    expect(tryGetString(body, "output_text") ?? "").toBe("Hi");
   });
 
   test("responses replay suppression keeps conversation header when body conversation is disabled", async () => {
@@ -1278,7 +1278,7 @@ describe("simulated transform mode proxy flow", () => {
     const body = (await response.json()) as JsonObject;
     expect(tryGetString(body, "conversation")).toBeNull();
     expect(tryGetString(body, "conversation_id")).toBeNull();
-    expect(tryGetString(body, "output_text") ?? "").toBe("");
+    expect(tryGetString(body, "output_text") ?? "").toBe("Hi");
   });
 
   test("responses replay suppression uses stable replay id for growing assistant tails", async () => {
@@ -1360,7 +1360,7 @@ describe("simulated transform mode proxy flow", () => {
     const replayOneBody = (await replayOne.json()) as JsonObject;
     const replayOneId = tryGetString(replayOneBody, "id");
     expect(replayOneId?.startsWith("resp_replay_")).toBeTrue();
-    expect(tryGetString(replayOneBody, "output_text") ?? "").toBe("");
+    expect(tryGetString(replayOneBody, "output_text") ?? "").toBe("Hi");
 
     const replayTwo = await app.fetch(
       new Request("http://localhost/v1/responses", {
@@ -1395,7 +1395,7 @@ describe("simulated transform mode proxy flow", () => {
     expect(replayTwo.headers.get("x-m365-conversation-id")).toBe("conv_simulated_1");
     const replayTwoBody = (await replayTwo.json()) as JsonObject;
     expect(tryGetString(replayTwoBody, "id")).toBe(replayOneId);
-    expect(tryGetString(replayTwoBody, "output_text") ?? "").toBe("");
+    expect(tryGetString(replayTwoBody, "output_text") ?? "").toBe("Hi");
   });
 
   test("chat/completions normalizes top-level choice-shaped payload into choices array", async () => {

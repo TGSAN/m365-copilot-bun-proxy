@@ -807,7 +807,7 @@ async function handleResponsesCreate(
       parsedRequest,
       responseHeaders,
       replayConversationId,
-      null,
+      trailingAssistantReplay,
       replayResponseId,
     );
   }
@@ -827,7 +827,7 @@ async function handleResponsesCreate(
       parsedRequest,
       responseHeaders,
       replayConversationId,
-      null,
+      trailingAssistantReplay,
       replayResponseId,
     );
   }

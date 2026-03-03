@@ -285,6 +285,7 @@ export function tryParseResponsesRequest(
   | { ok: true; request: ParsedResponsesRequest }
   | { ok: false; error: string } {
   const previousResponseId = tryGetString(requestJson, "previous_response_id");
+  const store = tryGetBoolean(requestJson, "store") !== false;
   const specConversationId = extractSpecConversationId(requestJson);
   if (previousResponseId && specConversationId) {
     return {
@@ -304,6 +305,7 @@ export function tryParseResponsesRequest(
         previousResponseId,
         inputItemsForStorage: normalizedInput.inputItemsForStorage,
         instructions: tryGetString(requestJson, "instructions"),
+        store,
       },
     };
   }
@@ -351,6 +353,7 @@ export function tryParseResponsesRequest(
       previousResponseId,
       inputItemsForStorage: normalizedInput.inputItemsForStorage,
       instructions,
+      store,
     },
   };
 }

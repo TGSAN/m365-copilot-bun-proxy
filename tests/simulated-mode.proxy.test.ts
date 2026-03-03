@@ -17,6 +17,7 @@ import {
 import {
   isJsonObject,
   readSseEvents,
+  tryGetBoolean,
   tryGetString,
   tryParseJsonObject,
 } from "../src/proxy/utils";
@@ -937,6 +938,7 @@ describe("simulated transform mode proxy flow", () => {
     expect(response.body).not.toBeNull();
     let created: JsonObject | null = null;
     let inProgress: JsonObject | null = null;
+    let completed: JsonObject | null = null;
     for await (const event of readSseEvents(response.body!)) {
       const data = event.data.trim();
       if (!data || data.toLowerCase() === "[done]") {
@@ -956,27 +958,38 @@ describe("simulated transform mode proxy flow", () => {
       if (type === "response.in_progress" && isJsonObject(parsed.response)) {
         inProgress = parsed.response as JsonObject;
       }
-      if (created && inProgress) {
-        break;
+      if (type === "response.completed" && isJsonObject(parsed.response)) {
+        completed = parsed.response as JsonObject;
       }
     }
 
     expect(isJsonObject(created)).toBeTrue();
     expect(isJsonObject(inProgress)).toBeTrue();
+    expect(isJsonObject(completed)).toBeTrue();
     const createdResponse = created as JsonObject;
     const inProgressResponse = inProgress as JsonObject;
+    const completedResponse = completed as JsonObject;
     expect(tryGetString(createdResponse, "id")?.startsWith("resp_")).toBeTrue();
     expect(tryGetString(inProgressResponse, "id")).toBe(
       tryGetString(createdResponse, "id"),
     );
+    expect(tryGetString(completedResponse, "id")).toBe(
+      tryGetString(createdResponse, "id"),
+    );
     expect(tryGetString(createdResponse, "status")).toBe("in_progress");
     expect(tryGetString(inProgressResponse, "status")).toBe("in_progress");
+    expect(tryGetString(completedResponse, "status")).toBe("completed");
     expect(Array.isArray(createdResponse.output)).toBeTrue();
     expect(Array.isArray(inProgressResponse.output)).toBeTrue();
     expect((createdResponse.output as unknown[]).length).toBe(0);
     expect((inProgressResponse.output as unknown[]).length).toBe(0);
     expect(tryGetString(createdResponse, "output_text") ?? "").toBe("");
     expect(tryGetString(inProgressResponse, "output_text") ?? "").toBe("");
+    expect(tryGetBoolean(completedResponse, "store")).toBeTrue();
+    expect(isJsonObject(completedResponse.usage)).toBeTrue();
+    const usage = completedResponse.usage as JsonObject;
+    expect(typeof usage.input_tokens).toBe("number");
+    expect(typeof usage.output_tokens).toBe("number");
   });
 
   test("responses accepts spec conversation string input and returns spec conversation output", async () => {

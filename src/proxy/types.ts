@@ -105,6 +105,7 @@ export type ParsedResponsesRequest = {
   previousResponseId: string | null;
   inputItemsForStorage: JsonValue[];
   instructions: string | null;
+  store: boolean;
 };
 
 export type JsonPayload = {

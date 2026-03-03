@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   JsonObject,
+  JsonValue,
   OpenAiAssistantResponse,
   OpenAiAssistantToolCall,
   ParsedResponsesRequest,
@@ -56,23 +57,25 @@ export function buildOpenAiResponseObject(
   parsedRequest: ParsedResponsesRequest,
   conversationId: string | null,
 ): JsonObject {
+  const usage = buildResponseUsage(parsedRequest, output);
   const response: JsonObject = {
     id: responseId,
     object: "response",
     created_at: createdAt,
     status,
+    error: null,
+    incomplete_details: null,
+    service_tier: null,
+    usage,
     model,
     output: output.map((item) => cloneJsonValue(item)),
     output_text: extractOutputText(output),
     parallel_tool_calls: parsedRequest.base.tooling.parallelToolCalls,
+    store: parsedRequest.store,
   };
 
-  if (parsedRequest.previousResponseId) {
-    response.previous_response_id = parsedRequest.previousResponseId;
-  }
-  if (parsedRequest.instructions) {
-    response.instructions = parsedRequest.instructions;
-  }
+  response.previous_response_id = parsedRequest.previousResponseId ?? null;
+  response.instructions = parsedRequest.instructions ?? null;
   if (parsedRequest.inputItemsForStorage.length > 0) {
     response.input = cloneJsonValue(parsedRequest.inputItemsForStorage);
   }
@@ -94,7 +97,7 @@ export function buildMessageOutputItem(
     type: "message",
     status,
     role: "assistant",
-    content: [{ type: "output_text", text }],
+    content: [{ type: "output_text", text, annotations: [] }],
   };
 }
 
@@ -261,4 +264,69 @@ function extractOutputText(output: JsonObject[]): string {
     }
   }
   return segments.join("");
+}
+
+function buildResponseUsage(
+  parsedRequest: ParsedResponsesRequest,
+  output: JsonObject[],
+): JsonObject {
+  const inputText = extractInputText(parsedRequest.inputItemsForStorage);
+  const outputText = extractOutputText(output);
+  const inputTokens = estimateTokenCount(inputText);
+  const outputTokens = estimateTokenCount(outputText);
+  return {
+    input_tokens: inputTokens,
+    input_tokens_details: { cached_tokens: 0 },
+    output_tokens: outputTokens,
+    output_tokens_details: { reasoning_tokens: 0 },
+    total_tokens: inputTokens + outputTokens,
+  };
+}
+
+function extractInputText(inputItems: JsonValue[]): string {
+  const segments: string[] = [];
+  for (const inputItem of inputItems) {
+    if (
+      !inputItem ||
+      typeof inputItem !== "object" ||
+      Array.isArray(inputItem)
+    ) {
+      continue;
+    }
+    const record = inputItem as Record<string, unknown>;
+    const content = record.content;
+    if (typeof content === "string") {
+      if (content.trim().length > 0) {
+        segments.push(content);
+      }
+      continue;
+    }
+    if (!Array.isArray(content)) {
+      continue;
+    }
+    for (const part of content) {
+      if (
+        !part ||
+        typeof part !== "object" ||
+        Array.isArray(part)
+      ) {
+        continue;
+      }
+      const partRecord = part as Record<string, unknown>;
+      const text = partRecord.text;
+      if (typeof text === "string" && text.trim().length > 0) {
+        segments.push(text);
+      }
+    }
+  }
+  return segments.join("\n");
+}
+
+function estimateTokenCount(text: string): number {
+  const normalized = text.trim();
+  if (!normalized) {
+    return 0;
+  }
+  // Approximate token count for compatibility fields; precise tokenizer not required here.
+  return Math.max(1, Math.ceil(normalized.length / 4));
 }

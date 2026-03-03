@@ -774,7 +774,11 @@ async function handleResponsesCreate(
     payload.json,
     selectedTransport,
   );
-  const replayResponseId = buildReplayResponseIdFromHash(requestHash);
+  const replayLoopHash = computeResponsesReplayLoopHash(
+    payload.json,
+    selectedTransport,
+  );
+  const replayResponseId = buildReplayResponseIdFromHash(replayLoopHash);
   const suppressedConversationId = resolveSuppressedResponsesConversationId(
     request,
     payload.json,
@@ -790,24 +794,40 @@ async function handleResponsesCreate(
     responseHeaders.set("x-m365-request-hash-replayed", "true");
     const replayConversationId =
       responseStore.getRecentRequestHashConversationId(requestHash) ??
+      responseStore.getRecentRequestHashConversationId(replayLoopHash) ??
       suppressedConversationId;
+    rememberResponsesReplayHashes(
+      responseStore,
+      requestHash,
+      replayLoopHash,
+      replayConversationId,
+    );
     return buildSuppressedReplayResponsesResult(
       services,
       parsedRequest,
       responseHeaders,
       replayConversationId,
-      trailingAssistantReplay,
+      null,
       replayResponseId,
     );
   }
   if (trailingAssistantReplay) {
-    responseStore.rememberRequestHash(requestHash, suppressedConversationId);
+    const replayConversationId =
+      responseStore.getRecentRequestHashConversationId(requestHash) ??
+      responseStore.getRecentRequestHashConversationId(replayLoopHash) ??
+      suppressedConversationId;
+    rememberResponsesReplayHashes(
+      responseStore,
+      requestHash,
+      replayLoopHash,
+      replayConversationId,
+    );
     return buildSuppressedReplayResponsesResult(
       services,
       parsedRequest,
       responseHeaders,
-      suppressedConversationId,
-      trailingAssistantReplay,
+      replayConversationId,
+      null,
       replayResponseId,
     );
   }
@@ -1049,7 +1069,12 @@ async function handleResponsesCreate(
             "invalid_simulated_payload",
           );
         }
-        responseStore.rememberRequestHash(requestHash, conversationId);
+        rememberResponsesReplayHashes(
+          responseStore,
+          requestHash,
+          replayLoopHash,
+          conversationId,
+        );
         return buildSimulatedResponsesStreamResponse(
           services,
           parsedRequest,
@@ -1104,7 +1129,12 @@ async function handleResponsesCreate(
       if (strictToolError) {
         return strictToolError;
       }
-      responseStore.rememberRequestHash(requestHash, conversationId);
+      rememberResponsesReplayHashes(
+        responseStore,
+        requestHash,
+        replayLoopHash,
+        conversationId,
+      );
       return buildBufferedResponsesStreamResponse(
         services,
         parsedRequest,
@@ -1129,7 +1159,12 @@ async function handleResponsesCreate(
           "graph_error",
         );
       }
-      responseStore.rememberRequestHash(requestHash, conversationId);
+      rememberResponsesReplayHashes(
+        responseStore,
+        requestHash,
+        replayLoopHash,
+        conversationId,
+      );
       return transformGraphStreamToResponses(
         services,
         graphResponse,
@@ -1140,7 +1175,12 @@ async function handleResponsesCreate(
       );
     }
 
-    responseStore.rememberRequestHash(requestHash, conversationId);
+    rememberResponsesReplayHashes(
+      responseStore,
+      requestHash,
+      replayLoopHash,
+      conversationId,
+    );
     return streamSubstrateAsResponses(
       services,
       authorizationHeader,
@@ -1259,7 +1299,12 @@ async function handleResponsesCreate(
     }
 
     responseStore.set(normalized.responseId, normalized.responseBody, conversationId);
-    responseStore.rememberRequestHash(requestHash, conversationId);
+    rememberResponsesReplayHashes(
+      responseStore,
+      requestHash,
+      replayLoopHash,
+      conversationId,
+    );
     responseHeaders.set("content-type", "application/json");
     const body = JSON.stringify(normalized.responseBody);
     await debugLogger.logOutgoingResponse(200, responseHeaders.entries(), body);
@@ -1324,7 +1369,12 @@ async function handleResponsesCreate(
     conversationId,
   );
   responseStore.set(responseId, responseBody, conversationId);
-  responseStore.rememberRequestHash(requestHash, conversationId);
+  rememberResponsesReplayHashes(
+    responseStore,
+    requestHash,
+    replayLoopHash,
+    conversationId,
+  );
 
   responseHeaders.set("content-type", "application/json");
   const body = JSON.stringify(responseBody);
@@ -2385,6 +2435,60 @@ function computeResponsesRequestHash(
     .update("\n")
     .update(payloadText)
     .digest("hex");
+}
+
+function computeResponsesReplayLoopHash(
+  requestJson: JsonObject,
+  transport: string,
+): string {
+  const canonicalRequestJson = buildReplayLoopCanonicalRequestJson(requestJson);
+  return computeResponsesRequestHash(null, canonicalRequestJson, transport);
+}
+
+function buildReplayLoopCanonicalRequestJson(requestJson: JsonObject): JsonObject {
+  const inputItems = Array.isArray(requestJson.input) ? requestJson.input : null;
+  if (!inputItems || inputItems.length === 0) {
+    return requestJson;
+  }
+
+  let lastNonAssistantIndex = inputItems.length - 1;
+  while (
+    lastNonAssistantIndex >= 0 &&
+    isAssistantInputItem(inputItems[lastNonAssistantIndex])
+  ) {
+    lastNonAssistantIndex -= 1;
+  }
+
+  if (
+    lastNonAssistantIndex < 0 ||
+    lastNonAssistantIndex >= inputItems.length - 1
+  ) {
+    return requestJson;
+  }
+
+  return {
+    ...requestJson,
+    input: inputItems.slice(0, lastNonAssistantIndex + 1),
+  };
+}
+
+function isAssistantInputItem(inputItem: unknown): boolean {
+  if (!isJsonObject(inputItem)) {
+    return false;
+  }
+  return (tryGetString(inputItem, "role") ?? "").toLowerCase() === "assistant";
+}
+
+function rememberResponsesReplayHashes(
+  responseStore: ResponseStore,
+  requestHash: string,
+  replayLoopHash: string,
+  conversationId: string | null,
+): void {
+  responseStore.rememberRequestHash(requestHash, conversationId);
+  if (replayLoopHash !== requestHash) {
+    responseStore.rememberRequestHash(replayLoopHash, conversationId);
+  }
 }
 
 function buildReplayResponseIdFromHash(requestHash: string): string {

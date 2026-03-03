@@ -12,6 +12,7 @@ type ConversationLinkEntry = {
 
 type RequestHashEntry = {
   expiresAtUtc: number;
+  conversationId: string | null;
 };
 
 const RequestHashGuardTtlMs = 60_000;
@@ -133,7 +134,27 @@ export class ResponseStore {
     return true;
   }
 
-  rememberRequestHash(requestHash: string): void {
+  getRecentRequestHashConversationId(requestHash: string): string | null {
+    const normalizedHash = requestHash.trim();
+    if (!normalizedHash) {
+      return null;
+    }
+    this.purgeExpired();
+    const entry = this.requestHashes.get(normalizedHash);
+    if (!entry) {
+      return null;
+    }
+    if (entry.expiresAtUtc <= Date.now()) {
+      this.requestHashes.delete(normalizedHash);
+      return null;
+    }
+    return entry.conversationId;
+  }
+
+  rememberRequestHash(
+    requestHash: string,
+    conversationId: string | null = null,
+  ): void {
     const normalizedHash = requestHash.trim();
     if (!normalizedHash) {
       return;
@@ -141,6 +162,7 @@ export class ResponseStore {
     this.purgeExpired();
     this.requestHashes.set(normalizedHash, {
       expiresAtUtc: Date.now() + RequestHashGuardTtlMs,
+      conversationId: conversationId?.trim() ? conversationId.trim() : null,
     });
   }
 

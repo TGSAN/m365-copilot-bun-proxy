@@ -774,23 +774,36 @@ async function handleResponsesCreate(
     payload.json,
     selectedTransport,
   );
+  const suppressedConversationId = resolveSuppressedResponsesConversationId(
+    request,
+    payload.json,
+    parsedRequest,
+    selectedTransport,
+    conversationStore,
+    responseStore,
+  );
   if (responseStore.hasRecentRequestHash(requestHash)) {
     responseHeaders.set("x-m365-request-hash-replayed", "true");
+    const replayConversationId =
+      responseStore.getRecentRequestHashConversationId(requestHash) ??
+      suppressedConversationId;
     return buildSuppressedReplayResponsesResult(
       services,
       parsedRequest,
       responseHeaders,
+      replayConversationId,
     );
   }
   const repeatedAssistantReplay = detectRepeatedAssistantTailReplay(
     parsedRequest.inputItemsForStorage,
   );
   if (repeatedAssistantReplay) {
-    responseStore.rememberRequestHash(requestHash);
+    responseStore.rememberRequestHash(requestHash, suppressedConversationId);
     return buildSuppressedReplayResponsesResult(
       services,
       parsedRequest,
       responseHeaders,
+      suppressedConversationId,
     );
   }
   const conversationSelection = selectConversation(
@@ -1031,7 +1044,7 @@ async function handleResponsesCreate(
             "invalid_simulated_payload",
           );
         }
-        responseStore.rememberRequestHash(requestHash);
+        responseStore.rememberRequestHash(requestHash, conversationId);
         return buildSimulatedResponsesStreamResponse(
           services,
           parsedRequest,
@@ -1086,7 +1099,7 @@ async function handleResponsesCreate(
       if (strictToolError) {
         return strictToolError;
       }
-      responseStore.rememberRequestHash(requestHash);
+      responseStore.rememberRequestHash(requestHash, conversationId);
       return buildBufferedResponsesStreamResponse(
         services,
         parsedRequest,
@@ -1111,7 +1124,7 @@ async function handleResponsesCreate(
           "graph_error",
         );
       }
-      responseStore.rememberRequestHash(requestHash);
+      responseStore.rememberRequestHash(requestHash, conversationId);
       return transformGraphStreamToResponses(
         services,
         graphResponse,
@@ -1122,7 +1135,7 @@ async function handleResponsesCreate(
       );
     }
 
-    responseStore.rememberRequestHash(requestHash);
+    responseStore.rememberRequestHash(requestHash, conversationId);
     return streamSubstrateAsResponses(
       services,
       authorizationHeader,
@@ -1241,7 +1254,7 @@ async function handleResponsesCreate(
     }
 
     responseStore.set(normalized.responseId, normalized.responseBody, conversationId);
-    responseStore.rememberRequestHash(requestHash);
+    responseStore.rememberRequestHash(requestHash, conversationId);
     responseHeaders.set("content-type", "application/json");
     const body = JSON.stringify(normalized.responseBody);
     await debugLogger.logOutgoingResponse(200, responseHeaders.entries(), body);
@@ -1306,7 +1319,7 @@ async function handleResponsesCreate(
     conversationId,
   );
   responseStore.set(responseId, responseBody, conversationId);
-  responseStore.rememberRequestHash(requestHash);
+  responseStore.rememberRequestHash(requestHash, conversationId);
 
   responseHeaders.set("content-type", "application/json");
   const body = JSON.stringify(responseBody);
@@ -1443,9 +1456,13 @@ async function buildSuppressedReplayResponsesResult(
   services: Services,
   parsedRequest: ParsedResponsesRequest,
   headers: Headers,
+  conversationId: string | null,
 ): Promise<Response> {
   const responseId = createOpenAiResponseId();
   const createdAt = nowUnix();
+  const includeConversationId = services.options.includeConversationIdInResponseBody;
+  const responseConversationId =
+    includeConversationId && conversationId?.trim() ? conversationId.trim() : null;
   const inProgress = buildOpenAiResponseObject(
     responseId,
     createdAt,
@@ -1453,7 +1470,7 @@ async function buildSuppressedReplayResponsesResult(
     "in_progress",
     [],
     parsedRequest,
-    null,
+    responseConversationId,
   );
   const completed = buildOpenAiResponseObject(
     responseId,
@@ -1462,10 +1479,13 @@ async function buildSuppressedReplayResponsesResult(
     "completed",
     [],
     parsedRequest,
-    null,
+    responseConversationId,
   );
-  services.responseStore.set(responseId, completed, null);
+  services.responseStore.set(responseId, completed, responseConversationId);
   headers.set("x-m365-replay-suppressed", "true");
+  if (responseConversationId) {
+    headers.set("x-m365-conversation-id", responseConversationId);
+  }
 
   if (!parsedRequest.base.stream) {
     headers.set("content-type", "application/json");
@@ -2307,6 +2327,40 @@ function computeResponsesRequestHash(
     .update("\n")
     .update(payloadText)
     .digest("hex");
+}
+
+function resolveSuppressedResponsesConversationId(
+  request: Request,
+  requestJson: JsonObject,
+  parsedRequest: ParsedResponsesRequest,
+  selectedTransport: string,
+  conversationStore: ConversationStore,
+  responseStore: ResponseStore,
+): string | null {
+  const selection = selectConversation(
+    request,
+    requestJson,
+    parsedRequest.base.userKey,
+  );
+  if (selection.conversationId) {
+    return selection.conversationId;
+  }
+  if (parsedRequest.previousResponseId) {
+    const linked = responseStore.tryGetConversationLink(
+      parsedRequest.previousResponseId,
+    );
+    if (linked) {
+      return linked;
+    }
+  }
+  const scopedConversationKey = scopeConversationKey(
+    selection.conversationKey,
+    selectedTransport,
+  );
+  if (!scopedConversationKey) {
+    return null;
+  }
+  return conversationStore.tryGet(scopedConversationKey);
 }
 
 function detectRepeatedAssistantTailReplay(inputItems: unknown[]): string | null {

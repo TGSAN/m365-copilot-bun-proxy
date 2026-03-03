@@ -993,8 +993,11 @@ describe("simulated transform mode proxy flow", () => {
     expect(chatCallCount).toBe(1);
     expect(second.headers.get("x-m365-request-hash-replayed")).toBe("true");
     expect(second.headers.get("x-m365-replay-suppressed")).toBe("true");
+    expect(second.headers.get("x-m365-conversation-id")).toBe("conv_simulated_1");
     const secondBody = (await second.json()) as JsonObject;
     expect(tryGetString(secondBody, "status")).toBe("completed");
+    expect(tryGetString(secondBody, "conversation")).toBe("conv_simulated_1");
+    expect(tryGetString(secondBody, "conversation_id")).toBe("conv_simulated_1");
     expect(Array.isArray(secondBody.output)).toBeTrue();
     expect((secondBody.output as unknown[]).length).toBe(0);
     expect(tryGetString(secondBody, "output_text") ?? "").toBe("");
@@ -1027,6 +1030,7 @@ describe("simulated transform mode proxy flow", () => {
         body: JSON.stringify({
           model: "m365-copilot",
           stream: false,
+          conversation: "conv_replay_guard_non_stream",
           input: [
             {
               role: "user",
@@ -1048,9 +1052,18 @@ describe("simulated transform mode proxy flow", () => {
     expect(response.status).toBe(200);
     expect(chatCallCount).toBe(0);
     expect(response.headers.get("x-m365-replay-suppressed")).toBe("true");
+    expect(response.headers.get("x-m365-conversation-id")).toBe(
+      "conv_replay_guard_non_stream",
+    );
     const body = (await response.json()) as JsonObject;
     expect(tryGetString(body, "object")).toBe("response");
     expect(tryGetString(body, "status")).toBe("completed");
+    expect(tryGetString(body, "conversation")).toBe(
+      "conv_replay_guard_non_stream",
+    );
+    expect(tryGetString(body, "conversation_id")).toBe(
+      "conv_replay_guard_non_stream",
+    );
     expect(Array.isArray(body.output)).toBeTrue();
     expect((body.output as unknown[]).length).toBe(0);
     expect(tryGetString(body, "output_text") ?? "").toBe("");
@@ -1083,6 +1096,7 @@ describe("simulated transform mode proxy flow", () => {
         body: JSON.stringify({
           model: "m365-copilot",
           stream: true,
+          conversation: "conv_replay_guard_stream",
           input: [
             {
               role: "user",
@@ -1104,6 +1118,9 @@ describe("simulated transform mode proxy flow", () => {
     expect(response.status).toBe(200);
     expect(chatCallCount).toBe(0);
     expect(response.headers.get("x-m365-replay-suppressed")).toBe("true");
+    expect(response.headers.get("x-m365-conversation-id")).toBe(
+      "conv_replay_guard_stream",
+    );
     const contentType = response.headers.get("content-type") ?? "";
     expect(contentType.includes("text/event-stream")).toBeTrue();
     expect(response.body).not.toBeNull();
@@ -1135,6 +1152,12 @@ describe("simulated transform mode proxy flow", () => {
     expect(isJsonObject(completedResponse)).toBeTrue();
     const completed = completedResponse as JsonObject;
     expect(tryGetString(completed, "status")).toBe("completed");
+    expect(tryGetString(completed, "conversation")).toBe(
+      "conv_replay_guard_stream",
+    );
+    expect(tryGetString(completed, "conversation_id")).toBe(
+      "conv_replay_guard_stream",
+    );
     expect(Array.isArray(completed.output)).toBeTrue();
     expect((completed.output as unknown[]).length).toBe(0);
     expect(tryGetString(completed, "output_text") ?? "").toBe("");

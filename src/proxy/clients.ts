@@ -25,6 +25,7 @@ import {
   tryGetInt,
 } from "./utils";
 import { DebugMarkdownLogger } from "./logger";
+import { SubstrateSessionStore } from "./substrate-session-store";
 
 export class CopilotGraphClient {
   constructor(
@@ -160,6 +161,9 @@ export class CopilotSubstrateClient {
   constructor(
     private readonly options: WrapperOptions,
     private readonly logger: DebugMarkdownLogger,
+    private readonly sessionStore = new SubstrateSessionStore(
+      options.conversationTtlMinutes,
+    ),
   ) {}
 
   createConversation(): CreateConversationResult {
@@ -232,7 +236,7 @@ export class CopilotSubstrateClient {
     }
 
     const clientRequestId = randomUUID();
-    const sessionId = randomUUID();
+    const sessionId = this.sessionStore.getOrCreate(conversationId);
     const requestUri = buildSubstrateHubUri(
       this.options,
       objectId,
@@ -380,6 +384,7 @@ export class CopilotSubstrateClient {
             extractedConversationId !== resolvedConversationId
           ) {
             resolvedConversationId = extractedConversationId;
+            this.sessionStore.set(resolvedConversationId, sessionId);
             if (onStreamUpdate) {
               await onStreamUpdate({
                 deltaText: null,
@@ -469,6 +474,8 @@ export class CopilotSubstrateClient {
           "Substrate chat returned no assistant content.",
         );
       }
+
+      this.sessionStore.set(resolvedConversationId, sessionId);
 
       return {
         isSuccess: true,

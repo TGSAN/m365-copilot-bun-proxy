@@ -888,6 +888,97 @@ describe("simulated transform mode proxy flow", () => {
     expect(firstId).not.toBe(secondId);
   });
 
+  test("responses stream emits canonical in_progress response shape", async () => {
+    const simulatedResponse: JsonObject = {
+      id: "resp_001",
+      object: "response",
+      created: 1700000000,
+      model: "simulated-model",
+      output: [
+        {
+          id: "msg_simulated_shape",
+          type: "message",
+          status: "completed",
+          role: "assistant",
+          content: [{ type: "output_text", text: "hi" }],
+        },
+      ],
+      output_text: "hi",
+      status: "completed",
+      reasoning: { encrypted_content: "abc" },
+    };
+
+    const app = createProxyApp(
+      createServices((conversationId, payload) =>
+        buildGraphChatResult(
+          conversationId,
+          payload,
+          toMarkdownJson(simulatedResponse),
+        ),
+      ),
+    );
+
+    const response = await app.fetch(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-m365-transport": TransportNames.Graph,
+        },
+        body: JSON.stringify({
+          model: "m365-copilot",
+          stream: true,
+          input: [{ role: "user", content: [{ type: "input_text", text: "Hi" }] }],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).not.toBeNull();
+    let created: JsonObject | null = null;
+    let inProgress: JsonObject | null = null;
+    for await (const event of readSseEvents(response.body!)) {
+      const data = event.data.trim();
+      if (!data || data.toLowerCase() === "[done]") {
+        if (data.toLowerCase() === "[done]") {
+          break;
+        }
+        continue;
+      }
+      const parsed = tryParseJsonObject(data);
+      if (!parsed) {
+        continue;
+      }
+      const type = tryGetString(parsed, "type");
+      if (type === "response.created" && isJsonObject(parsed.response)) {
+        created = parsed.response as JsonObject;
+      }
+      if (type === "response.in_progress" && isJsonObject(parsed.response)) {
+        inProgress = parsed.response as JsonObject;
+      }
+      if (created && inProgress) {
+        break;
+      }
+    }
+
+    expect(isJsonObject(created)).toBeTrue();
+    expect(isJsonObject(inProgress)).toBeTrue();
+    const createdResponse = created as JsonObject;
+    const inProgressResponse = inProgress as JsonObject;
+    expect(tryGetString(createdResponse, "id")?.startsWith("resp_")).toBeTrue();
+    expect(tryGetString(inProgressResponse, "id")).toBe(
+      tryGetString(createdResponse, "id"),
+    );
+    expect(tryGetString(createdResponse, "status")).toBe("in_progress");
+    expect(tryGetString(inProgressResponse, "status")).toBe("in_progress");
+    expect(Array.isArray(createdResponse.output)).toBeTrue();
+    expect(Array.isArray(inProgressResponse.output)).toBeTrue();
+    expect((createdResponse.output as unknown[]).length).toBe(0);
+    expect((inProgressResponse.output as unknown[]).length).toBe(0);
+    expect(tryGetString(createdResponse, "output_text") ?? "").toBe("");
+    expect(tryGetString(inProgressResponse, "output_text") ?? "").toBe("");
+  });
+
   test("responses accepts spec conversation string input and returns spec conversation output", async () => {
     const app = createProxyApp(
       createServices((conversationId, payload) =>

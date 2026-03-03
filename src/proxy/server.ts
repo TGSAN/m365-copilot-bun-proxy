@@ -2368,9 +2368,33 @@ async function buildSimulatedResponsesStreamResponse(
   const responseBody = normalized.responseBody;
   const responseId = createOpenAiResponseId();
   responseBody.id = responseId;
-  const outputItems = Array.isArray(responseBody.output)
+  const rawOutputItems = Array.isArray(responseBody.output)
     ? responseBody.output.filter(isJsonObject)
     : [];
+  const resolvedModel =
+    tryGetString(responseBody, "model") ?? parsedRequest.base.model;
+  const createdAt = resolveResponseCreatedAt(responseBody.created_at);
+  const finalizedOutputItems: JsonObject[] = rawOutputItems.map((item, index) => {
+    const itemId = tryGetString(item, "id") ?? createOpenAiOutputItemId("out");
+    const itemType = (tryGetString(item, "type") ?? "").toLowerCase();
+    if (itemType === "message") {
+      return buildMessageOutputItem(
+        itemId,
+        extractMessageOutputText(item),
+        "completed",
+      );
+    }
+    const normalizedItem: JsonObject = { ...item };
+    normalizedItem.id = itemId;
+    if (!tryGetString(normalizedItem, "status")) {
+      normalizedItem.status = "completed";
+    }
+    if (!tryGetString(normalizedItem, "type")) {
+      normalizedItem.type = "output";
+    }
+    return normalizedItem;
+  });
+  const responseConversationId = includeConversationId ? conversationId : null;
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -2379,15 +2403,20 @@ async function buildSimulatedResponsesStreamResponse(
         enqueueSseJsonEvent(controller, encoder, event);
       };
 
-      const inProgress: JsonObject = {
-        ...responseBody,
-        status: "in_progress",
-      };
+      const inProgress = buildOpenAiResponseObject(
+        responseId,
+        createdAt,
+        resolvedModel,
+        "in_progress",
+        [],
+        parsedRequest,
+        responseConversationId,
+      );
       writeDataEvent(buildResponseCreatedEvent(inProgress));
       writeDataEvent(buildResponseInProgressEvent(inProgress));
 
-      for (let index = 0; index < outputItems.length; index++) {
-        const item = outputItems[index];
+      for (let index = 0; index < finalizedOutputItems.length; index++) {
+        const item = finalizedOutputItems[index];
         const itemId = tryGetString(item, "id") ?? createOpenAiOutputItemId("out");
         const itemType = (tryGetString(item, "type") ?? "").toLowerCase();
         if (itemType === "message") {
@@ -2437,10 +2466,15 @@ async function buildSimulatedResponsesStreamResponse(
         writeDataEvent(buildResponseOutputItemDoneEvent(responseId, index, item));
       }
 
-      const completed: JsonObject = {
-        ...responseBody,
-        status: "completed",
-      };
+      const completed = buildOpenAiResponseObject(
+        responseId,
+        createdAt,
+        resolvedModel,
+        "completed",
+        finalizedOutputItems,
+        parsedRequest,
+        responseConversationId,
+      );
       writeDataEvent(buildResponseCompletedEvent(completed));
       services.responseStore.set(responseId, completed, conversationId);
       enqueueSseDoneEvent(controller, encoder);
@@ -2454,6 +2488,19 @@ async function buildSimulatedResponsesStreamResponse(
   headers.set("x-m365-conversation-id", conversationId);
   await services.debugLogger.logOutgoingResponse(200, headers.entries(), null);
   return finalizeOutgoingStreamResponse(services, stream, headers);
+}
+
+function resolveResponseCreatedAt(createdAt: unknown): number {
+  if (typeof createdAt === "number" && Number.isFinite(createdAt)) {
+    return Math.trunc(createdAt);
+  }
+  if (typeof createdAt === "string") {
+    const parsed = Number.parseInt(createdAt, 10);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return nowUnix();
 }
 
 function extractResponseOutputText(outputItems: unknown[]): string {

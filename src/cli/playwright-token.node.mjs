@@ -1,8 +1,11 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { chromium, firefox, webkit } from "playwright";
 
 const SUBSTRATE_WS_PATTERN = /substrate\.office\.com\/m365Copilot\/Chathub/i;
+const SUBSTRATE_WS_HOST_PATTERN = /(^|\.)substrate\.office\.com$/i;
+const SUBSTRATE_WS_PATH_PATTERN = /\/m365Copilot\/Chathub\/?$/i;
 const CHAT_URL = "https://m365.cloud.microsoft/chat/?auth=2";
 const CHAT_URL_GLOB = "**/chat/**";
 const LOGIN_HOST_PATTERN = /login\.(microsoftonline|live|microsoft)\.com/i;
@@ -22,20 +25,37 @@ const SUPPORTED_BROWSERS = new Set([
 const TOKEN_TIMEOUT_MS = 120_000;
 const LOGIN_TIMEOUT_MS = 300_000;
 
-const parsed = parseArgs(process.argv.slice(2));
-const tokenPath = parsed["token-path"];
-const storageStatePath = parsed["storage-state-path"];
-const requestedBrowser = normalizeBrowserName(parsed.browser ?? "edge");
-
-if (!tokenPath || !storageStatePath || !requestedBrowser) {
-  const browserHelp = [...SUPPORTED_BROWSERS].join(", ");
-  console.error(
-    `Missing or invalid args. Required: --token-path <path> --storage-state-path <path> [--browser <${browserHelp}>]`,
-  );
-  process.exit(2);
+if (isMainModule(process.argv[1])) {
+  await runCli();
 }
 
-await fetchTokenWithPlaywrightNode(tokenPath, storageStatePath, requestedBrowser);
+function isMainModule(entryPath) {
+  if (!entryPath?.trim()) {
+    return false;
+  }
+  try {
+    return import.meta.url === pathToFileURL(entryPath).href;
+  } catch {
+    return false;
+  }
+}
+
+async function runCli() {
+  const parsed = parseArgs(process.argv.slice(2));
+  const tokenPath = parsed["token-path"];
+  const storageStatePath = parsed["storage-state-path"];
+  const requestedBrowser = normalizeBrowserName(parsed.browser ?? "edge");
+
+  if (!tokenPath || !storageStatePath || !requestedBrowser) {
+    const browserHelp = [...SUPPORTED_BROWSERS].join(", ");
+    console.error(
+      `Missing or invalid args. Required: --token-path <path> --storage-state-path <path> [--browser <${browserHelp}>]`,
+    );
+    process.exit(2);
+  }
+
+  await fetchTokenWithPlaywrightNode(tokenPath, storageStatePath, requestedBrowser);
+}
 
 async function fetchTokenWithPlaywrightNode(
   tokenPath,
@@ -50,6 +70,7 @@ async function fetchTokenWithPlaywrightNode(
   const context = await browser.newContext(
     storageStateExists ? { storageState: storageStatePath } : {},
   );
+  await installSubstrateTemporaryChatShim(context);
   console.log(
     `[playwright] Browser launched (${storageStateExists ? "using saved storage state" : "fresh context"}).`,
   );
@@ -116,6 +137,83 @@ async function fetchTokenWithPlaywrightNode(
     await context?.close().catch(() => {});
     await browser?.close().catch(() => {});
   }
+}
+
+async function installSubstrateTemporaryChatShim(context) {
+  // Ensure token-fetch prompt does not get persisted in Copilot history.
+  await context.addInitScript(({ hostPattern, pathPattern }) => {
+    const substrateHostPattern = new RegExp(hostPattern, "i");
+    const substrateHubPathPattern = new RegExp(pathPattern, "i");
+    const OriginalWebSocket = window.WebSocket;
+
+    const normalizeSubstrateHubUrl = (inputUrl) => {
+      const raw = typeof inputUrl === "string" ? inputUrl : String(inputUrl);
+      let parsed;
+      try {
+        parsed = new URL(raw, window.location.href);
+      } catch {
+        return raw;
+      }
+
+      const isSubstrateHub =
+        substrateHostPattern.test(parsed.hostname) &&
+        substrateHubPathPattern.test(parsed.pathname);
+      if (!isSubstrateHub || parsed.searchParams.has("disableMemory")) {
+        return raw;
+      }
+
+      parsed.searchParams.set("disableMemory", "1");
+      return parsed.toString();
+    };
+
+    function WrappedWebSocket(url, protocols) {
+      const nextUrl = normalizeSubstrateHubUrl(url);
+      if (typeof protocols === "undefined") {
+        return new OriginalWebSocket(nextUrl);
+      }
+      return new OriginalWebSocket(nextUrl, protocols);
+    }
+
+    WrappedWebSocket.prototype = OriginalWebSocket.prototype;
+    Object.setPrototypeOf(WrappedWebSocket, OriginalWebSocket);
+    for (const key of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) {
+      Object.defineProperty(WrappedWebSocket, key, {
+        configurable: true,
+        enumerable: true,
+        value: OriginalWebSocket[key],
+      });
+    }
+
+    Object.defineProperty(window, "WebSocket", {
+      configurable: true,
+      enumerable: false,
+      writable: true,
+      value: WrappedWebSocket,
+    });
+  }, {
+    hostPattern: SUBSTRATE_WS_HOST_PATTERN.source,
+    pathPattern: SUBSTRATE_WS_PATH_PATTERN.source,
+  });
+}
+
+export function withDisableMemoryForSubstrateHubUrl(inputUrl, baseUrl) {
+  const raw = typeof inputUrl === "string" ? inputUrl : String(inputUrl);
+  let parsed;
+  try {
+    parsed = new URL(raw, baseUrl);
+  } catch {
+    return raw;
+  }
+
+  const isSubstrateHub =
+    SUBSTRATE_WS_HOST_PATTERN.test(parsed.hostname) &&
+    SUBSTRATE_WS_PATH_PATTERN.test(parsed.pathname);
+  if (!isSubstrateHub || parsed.searchParams.has("disableMemory")) {
+    return raw;
+  }
+
+  parsed.searchParams.set("disableMemory", "1");
+  return parsed.toString();
 }
 
 async function launchBrowser(browserName) {

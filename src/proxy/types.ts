@@ -177,6 +177,7 @@ export type WrapperOptions = {
   temporaryChat: boolean;
   ignoreIncomingAuthorizationHeader: boolean;
   playwrightBrowser: PlaywrightBrowser;
+  playwrightCustomScript: string | null;
   transport: string;
   graphBaseUrl: string;
   createConversationPath: string;

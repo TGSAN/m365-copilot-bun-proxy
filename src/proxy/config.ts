@@ -54,6 +54,7 @@ const WrapperOptionsSchema = z.object({
   temporaryChat: z.boolean().default(true),
   ignoreIncomingAuthorizationHeader: z.boolean().default(true),
   playwrightBrowser: PlaywrightBrowserSchema.default(PlaywrightBrowsers.Edge),
+  playwrightCustomScript: z.string().nullable().default(null),
   transport: z.string().default("graph"),
   graphBaseUrl: z.string().default("https://graph.microsoft.com"),
   createConversationPath: z.string().default("/beta/copilot/conversations"),

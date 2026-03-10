@@ -40,11 +40,24 @@ function isMainModule(entryPath) {
   }
 }
 
+async function loadConfig() {
+  try {
+    const configPath = path.join(process.cwd(), "config.json");
+    const configContent = await fs.readFile(configPath, "utf8");
+    return JSON.parse(configContent);
+  } catch {
+    return {};
+  }
+}
+
 async function runCli() {
   const parsed = parseArgs(process.argv.slice(2));
+  const config = await loadConfig();
+  
   const tokenPath = parsed["token-path"];
   const storageStatePath = parsed["storage-state-path"];
-  const requestedBrowser = normalizeBrowserName(parsed.browser ?? "edge");
+  const requestedBrowser = normalizeBrowserName(parsed.browser ?? config.playwrightBrowser ?? "edge");
+  const customScript = parsed["custom-script" ] ?? config.playwrightCustomScript;
 
   if (!tokenPath || !storageStatePath || !requestedBrowser) {
     const browserHelp = [...SUPPORTED_BROWSERS].join(", ");
@@ -54,13 +67,14 @@ async function runCli() {
     process.exit(2);
   }
 
-  await fetchTokenWithPlaywrightNode(tokenPath, storageStatePath, requestedBrowser);
+  await fetchTokenWithPlaywrightNode(tokenPath, storageStatePath, requestedBrowser, customScript);
 }
 
 async function fetchTokenWithPlaywrightNode(
   tokenPath,
   storageStatePath,
   browserName,
+  customScript,
 ) {
   console.log(
     `[playwright] Launching ${browserName} under Node.js (headed)...`,
@@ -71,12 +85,16 @@ async function fetchTokenWithPlaywrightNode(
     storageStateExists ? { storageState: storageStatePath } : {},
   );
   await installSubstrateTemporaryChatShim(context);
+  if (customScript) {
+    await installCustomScript(context, customScript);
+  }
   console.log(
     `[playwright] Browser launched (${storageStateExists ? "using saved storage state" : "fresh context"}).`,
   );
 
   try {
     const page = await context.newPage();
+    
     await page.bringToFront().catch(() => {});
     console.log(`[playwright] Page URL: ${page.url()}`);
 
@@ -137,6 +155,12 @@ async function fetchTokenWithPlaywrightNode(
     await context?.close().catch(() => {});
     await browser?.close().catch(() => {});
   }
+}
+
+async function installCustomScript(context, customScript) {
+  console.log("[playwright] Injecting custom script...");
+  await context.addInitScript(customScript);
+  console.log("[playwright] Custom script injected successfully.");
 }
 
 async function installSubstrateTemporaryChatShim(context) {

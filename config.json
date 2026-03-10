@@ -8,6 +8,7 @@
   "temporaryChat": true,
   "ignoreIncomingAuthorizationHeader": true,
   "playwrightBrowser": "edge",
+  "playwrightCustomScript": null,
   "includeConversationIdInResponseBody": true,
   "retrySimulatedToollessResponses": true,
   "graphBaseUrl": "https://graph.microsoft.com",

@@ -19,6 +19,7 @@ export async function fetchTokenWithPlaywright(
   options?: {
     quiet?: boolean;
     browser?: PlaywrightBrowserName;
+    customScript?: string;
   },
 ): Promise<void> {
   const runnerPath = await resolveNodeRunnerPath();
@@ -28,6 +29,7 @@ export async function fetchTokenWithPlaywright(
     storageStatePath,
     options?.browser ?? DEFAULT_PLAYWRIGHT_BROWSER,
     options?.quiet ?? false,
+    options?.customScript,
   );
 }
 
@@ -61,25 +63,26 @@ function runNodePlaywrightFetch(
   storageStatePath: string,
   browser: PlaywrightBrowserName,
   quiet: boolean,
+  customScript?: string,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      "node",
-      [
-        runnerPath,
-        "--token-path",
-        tokenPath,
-        "--storage-state-path",
-        storageStatePath,
-        "--browser",
-        browser,
-      ],
-      {
-        stdio: "pipe",
-        env: process.env,
-        windowsHide: false,
-      },
-    );
+    const args = [
+      runnerPath,
+      "--token-path",
+      tokenPath,
+      "--storage-state-path",
+      storageStatePath,
+      "--browser",
+      browser,
+    ];
+    if (customScript) {
+      args.push("--custom-script", customScript);
+    }
+    const child = spawn("node", args, {
+      stdio: "pipe",
+      env: process.env,
+      windowsHide: false,
+    });
     let output = "";
     const pushOutput = (chunk: string): void => {
       output += chunk;

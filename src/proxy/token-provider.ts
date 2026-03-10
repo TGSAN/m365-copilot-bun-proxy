@@ -15,11 +15,13 @@ export class ProxyTokenProvider {
   private readonly browserStatePathPromise: Promise<string>;
   private readonly ignoreIncomingAuthorizationHeader: boolean;
   private readonly playwrightBrowser: PlaywrightBrowser;
+  private readonly customScript: string | null;
   private inFlightAcquirePromise: Promise<string | null> | null = null;
 
   constructor(options?: {
     ignoreIncomingAuthorizationHeader?: boolean;
     playwrightBrowser?: PlaywrightBrowser;
+    customScript?: string | null;
   }) {
     this.tokenPathPromise = getTokenPath();
     this.browserStatePathPromise = getBrowserStatePath();
@@ -27,6 +29,7 @@ export class ProxyTokenProvider {
       options?.ignoreIncomingAuthorizationHeader ?? true;
     this.playwrightBrowser =
       options?.playwrightBrowser ?? PlaywrightBrowsers.Edge;
+    this.customScript = options?.customScript ?? null;
   }
 
   async resolveAuthorizationHeader(
@@ -80,6 +83,7 @@ export class ProxyTokenProvider {
       await fetchTokenWithPlaywright(tokenPath, browserStatePath, {
         quiet: true,
         browser: this.playwrightBrowser,
+        customScript: this.customScript ?? undefined,
       });
     } catch {
       return null;

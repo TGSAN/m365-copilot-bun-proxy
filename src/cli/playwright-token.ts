@@ -35,8 +35,11 @@ export async function fetchTokenWithPlaywright(
 
 async function resolveNodeRunnerPath(): Promise<string> {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const exeDir = path.dirname(process.argv[0]);
   const candidates = [
     path.join(moduleDir, NODE_RUNNER_FILENAME),
+    path.join(exeDir, NODE_RUNNER_FILENAME),
+    path.join(process.cwd(), NODE_RUNNER_FILENAME),
     path.join(process.cwd(), "src", "cli", NODE_RUNNER_FILENAME),
     path.join(process.cwd(), "dist", NODE_RUNNER_FILENAME),
   ];

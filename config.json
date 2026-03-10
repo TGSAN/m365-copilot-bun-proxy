@@ -79,5 +79,6 @@
   "defaultModel": "m365-copilot",
   "defaultTimeZone": "Europe/London",
   "conversationTtlMinutes": 180,
-  "maxAdditionalContextMessages": 16
+  "maxAdditionalContextMessages": 16,
+  "apiKey": null
 }

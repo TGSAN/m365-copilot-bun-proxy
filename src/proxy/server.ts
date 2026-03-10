@@ -95,37 +95,98 @@ const AvailableModelIds = [
   "m365-copilot-claude-reasoning",
 ] as const;
 
+function checkApiKey(request: Request, options: WrapperOptions): Response | null {
+  if (!options.apiKey) {
+    return null;
+  }
+  const authHeader = request.headers.get("authorization");
+  const xApiKeyHeader = request.headers.get("x-api-key");
+  let incoming: string | null = null;
+  if (xApiKeyHeader) {
+    incoming = xApiKeyHeader.trim();
+  } else if (authHeader) {
+    incoming = authHeader.replace(/^Bearer\s+/i, "").trim();
+  }
+  if (incoming !== options.apiKey) {
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: "Invalid or missing API key.",
+          type: "invalid_request_error",
+          code: "invalid_api_key",
+        },
+      }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    );
+  }
+  return null;
+}
+
 export function createProxyApp(services: Services): Hono {
   const app = new Hono();
 
   app.get("/healthz", (c) => c.json({ status: "ok" }));
-  app.get("/v1/models", (c) => c.json(buildModelsResponse()));
-  app.get("/openai/v1/models", (c) => c.json(buildModelsResponse()));
+  app.get("/v1/models", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return c.json(buildModelsResponse());
+  });
+  app.get("/openai/v1/models", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return c.json(buildModelsResponse());
+  });
 
-  app.post("/v1/chat/completions", (c) => handleChat(c.req.raw, services));
-  app.post("/openai/v1/chat/completions", (c) =>
-    handleChat(c.req.raw, services),
-  );
-  app.post("/v1/responses", (c) => handleResponsesCreate(c.req.raw, services));
-  app.post("/openai/v1/responses", (c) =>
-    handleResponsesCreate(c.req.raw, services),
-  );
-  app.get("/v1/responses", (c) => handleResponsesList(c.req.raw, services));
-  app.get("/openai/v1/responses", (c) =>
-    handleResponsesList(c.req.raw, services),
-  );
-  app.get("/v1/responses/:responseId", (c) =>
-    handleResponsesRetrieve(c.req.raw, services, c.req.param("responseId")),
-  );
-  app.get("/openai/v1/responses/:responseId", (c) =>
-    handleResponsesRetrieve(c.req.raw, services, c.req.param("responseId")),
-  );
-  app.delete("/v1/responses/:responseId", (c) =>
-    handleResponsesDelete(c.req.raw, services, c.req.param("responseId")),
-  );
-  app.delete("/openai/v1/responses/:responseId", (c) =>
-    handleResponsesDelete(c.req.raw, services, c.req.param("responseId")),
-  );
+  app.post("/v1/chat/completions", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return handleChat(c.req.raw, services);
+  });
+  app.post("/openai/v1/chat/completions", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return handleChat(c.req.raw, services);
+  });
+  app.post("/v1/responses", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return handleResponsesCreate(c.req.raw, services);
+  });
+  app.post("/openai/v1/responses", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return handleResponsesCreate(c.req.raw, services);
+  });
+  app.get("/v1/responses", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return handleResponsesList(c.req.raw, services);
+  });
+  app.get("/openai/v1/responses", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return handleResponsesList(c.req.raw, services);
+  });
+  app.get("/v1/responses/:responseId", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return handleResponsesRetrieve(c.req.raw, services, c.req.param("responseId"));
+  });
+  app.get("/openai/v1/responses/:responseId", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return handleResponsesRetrieve(c.req.raw, services, c.req.param("responseId"));
+  });
+  app.delete("/v1/responses/:responseId", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return handleResponsesDelete(c.req.raw, services, c.req.param("responseId"));
+  });
+  app.delete("/openai/v1/responses/:responseId", (c) => {
+    const denied = checkApiKey(c.req.raw, services.options);
+    if (denied) return denied;
+    return handleResponsesDelete(c.req.raw, services, c.req.param("responseId"));
+  });
   return app;
 }
 

@@ -190,4 +190,5 @@ export type WrapperOptions = {
   maxAdditionalContextMessages: number;
   includeConversationIdInResponseBody: boolean;
   retrySimulatedToollessResponses: boolean;
+  apiKey: string | null;
 };

@@ -135,6 +135,7 @@ const WrapperOptionsSchema = z.object({
   maxAdditionalContextMessages: z.number().int().default(16),
   includeConversationIdInResponseBody: z.boolean().default(true),
   retrySimulatedToollessResponses: z.boolean().default(true),
+  apiKey: z.string().nullable().default(null),
 });
 
 export async function loadWrapperOptions(cwd: string): Promise<WrapperOptions> {

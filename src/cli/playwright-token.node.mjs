@@ -119,11 +119,24 @@ async function fetchTokenWithPlaywrightNode(
       const editor = page.locator("#m365-chat-editor-target-element");
       await editor.waitFor({ state: "visible", timeout: 20_000 });
       console.log("[playwright] Sending message to trigger WebSocket...");
-      await editor.fill("Hi");
+      await editor.click();
+      await page.waitForFunction(
+        (sel) => {
+          const el = document.querySelector(sel);
+          return el && el.isContentEditable;
+        },
+        "#m365-chat-editor-target-element",
+        { timeout: 10_000 },
+      );
+      await editor.click();
+      await page.waitForTimeout(1_000);
+      await editor.evaluate(() => {
+        document.execCommand("insertText", false, "Hi");
+      });
       await page.waitForTimeout(1_000);
 
       const sendButton = page
-        .locator('button[title="Send"], [role="button"][title="Send"], [title="Send"]')
+        .locator('#m365-chat-input-shared-wrapper button[type="submit"], button[title="Send"], [title="Send"]')
         .first();
       try {
         await sendButton.waitFor({ state: "visible", timeout: 10_000 });

@@ -84,6 +84,7 @@ const AvailableModelIds = [
   "m365-copilot-auto",
   "m365-copilot-quick",
   "m365-copilot-reasoning",
+  "m365-copilot-page",
   "m365-copilot-gpt5.2-auto",
   "m365-copilot-gpt5.2-quick",
   "m365-copilot-gpt5.2-reasoning",

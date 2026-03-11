@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type {
   JsonObject,
-  JsonValue,
   OpenAiAssistantResponse,
   OpenAiAssistantToolCall,
   ParsedResponsesRequest,
 } from "./types";
+import { buildResponsesUsage } from "./token-usage";
 import { cloneJsonValue } from "./utils";
 
 export function createOpenAiResponseId(): string {
@@ -270,63 +270,5 @@ function buildResponseUsage(
   parsedRequest: ParsedResponsesRequest,
   output: JsonObject[],
 ): JsonObject {
-  const inputText = extractInputText(parsedRequest.inputItemsForStorage);
-  const outputText = extractOutputText(output);
-  const inputTokens = estimateTokenCount(inputText);
-  const outputTokens = estimateTokenCount(outputText);
-  return {
-    input_tokens: inputTokens,
-    input_tokens_details: { cached_tokens: 0 },
-    output_tokens: outputTokens,
-    output_tokens_details: { reasoning_tokens: 0 },
-    total_tokens: inputTokens + outputTokens,
-  };
-}
-
-function extractInputText(inputItems: JsonValue[]): string {
-  const segments: string[] = [];
-  for (const inputItem of inputItems) {
-    if (
-      !inputItem ||
-      typeof inputItem !== "object" ||
-      Array.isArray(inputItem)
-    ) {
-      continue;
-    }
-    const record = inputItem as Record<string, unknown>;
-    const content = record.content;
-    if (typeof content === "string") {
-      if (content.trim().length > 0) {
-        segments.push(content);
-      }
-      continue;
-    }
-    if (!Array.isArray(content)) {
-      continue;
-    }
-    for (const part of content) {
-      if (
-        !part ||
-        typeof part !== "object" ||
-        Array.isArray(part)
-      ) {
-        continue;
-      }
-      const partRecord = part as Record<string, unknown>;
-      const text = partRecord.text;
-      if (typeof text === "string" && text.trim().length > 0) {
-        segments.push(text);
-      }
-    }
-  }
-  return segments.join("\n");
-}
-
-function estimateTokenCount(text: string): number {
-  const normalized = text.trim();
-  if (!normalized) {
-    return 0;
-  }
-  // Approximate token count for compatibility fields; precise tokenizer not required here.
-  return Math.max(1, Math.ceil(normalized.length / 4));
+  return buildResponsesUsage(parsedRequest, output);
 }

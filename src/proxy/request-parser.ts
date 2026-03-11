@@ -23,6 +23,16 @@ import {
   isJsonObject,
   cloneJsonValue,
 } from "./utils";
+import {
+  countContextMessagesTokens,
+  countTextTokens,
+  truncateTextToTokenBudget,
+} from "./token-usage";
+
+const DEFAULT_CONTEXT_TOKEN_BUDGET = 1536;
+const DEFAULT_RECENT_CONTEXT_MESSAGES = 6;
+const DEFAULT_CONTEXT_SUMMARY_TOKEN_BUDGET = 384;
+const MIN_CONTEXT_ENTRY_TOKEN_BUDGET = 24;
 
 export function normalizeTransport(
   transport: string | null | undefined,
@@ -991,10 +1001,206 @@ function buildAdditionalContext(
     temperature,
   );
 
+  return compressAdditionalContext(context, requestJson, maxContextMessages);
+}
+
+function compressAdditionalContext(
+  context: ContextMessage[],
+  requestJson: JsonObject,
+  maxContextMessages: number,
+): ContextMessage[] {
+  const enableCompression = tryGetBoolean(requestJson, "m365_context_compression");
+  if (enableCompression === false) {
+    return applyContextMessageLimit(context, maxContextMessages);
+  }
+
+  const tokenBudget = resolvePositiveInteger(
+    tryGetDouble(requestJson, "m365_context_token_budget"),
+    DEFAULT_CONTEXT_TOKEN_BUDGET,
+  );
+  if (tokenBudget <= 0) {
+    return applyContextMessageLimit(context, maxContextMessages);
+  }
+
+  const normalized = context.filter((item) => item.text.trim().length > 0);
+  const exceedsMessageLimit =
+    maxContextMessages > 0 && normalized.length > maxContextMessages;
+  if (
+    normalized.length === 0 ||
+    (!exceedsMessageLimit && countContextMessagesTokens(normalized) <= tokenBudget)
+  ) {
+    return applyContextMessageLimit(normalized, maxContextMessages);
+  }
+
+  const recentMessageCount = Math.min(
+    normalized.length,
+    resolvePositiveInteger(
+      tryGetDouble(requestJson, "m365_context_recent_messages"),
+      DEFAULT_RECENT_CONTEXT_MESSAGES,
+    ),
+  );
+  const recentMessages =
+    recentMessageCount > 0 ? normalized.slice(-recentMessageCount) : [];
+  const olderMessages = normalized.slice(0, normalized.length - recentMessages.length);
+
+  const summaryTokenBudget = Math.min(
+    tokenBudget,
+    resolvePositiveInteger(
+      tryGetDouble(requestJson, "m365_context_summary_token_budget"),
+      DEFAULT_CONTEXT_SUMMARY_TOKEN_BUDGET,
+    ),
+  );
+  const summaryDescription = "Compressed previous context";
+  const remainingBudget = Math.max(
+    0,
+    tokenBudget -
+      countContextMessagesTokens(recentMessages) -
+      countTextTokens(summaryDescription),
+  );
+
+  const compressedSummary =
+    olderMessages.length > 0 && remainingBudget > 0
+      ? buildCompressedContextSummary(
+          olderMessages,
+          Math.min(summaryTokenBudget, remainingBudget),
+        )
+      : null;
+
+  const compressedContext = compressedSummary
+    ? [
+        {
+          text: compressedSummary,
+          description: summaryDescription,
+        },
+        ...recentMessages,
+      ]
+    : [...recentMessages];
+
+  return applyContextMessageLimit(
+    fitContextToTokenBudget(compressedContext, tokenBudget),
+    maxContextMessages,
+  );
+}
+
+function applyContextMessageLimit(
+  context: ContextMessage[],
+  maxContextMessages: number,
+): ContextMessage[] {
   if (maxContextMessages > 0 && context.length > maxContextMessages) {
-    context = context.slice(context.length - maxContextMessages);
+    return context.slice(context.length - maxContextMessages);
   }
   return context;
+}
+
+function fitContextToTokenBudget(
+  context: ContextMessage[],
+  tokenBudget: number,
+): ContextMessage[] {
+  const fitted = [...context];
+  while (fitted.length > 1 && countContextMessagesTokens(fitted) > tokenBudget) {
+    fitted.shift();
+  }
+  if (fitted.length === 0 || countContextMessagesTokens(fitted) <= tokenBudget) {
+    return fitted;
+  }
+
+  const lastMessage = fitted[fitted.length - 1];
+  const descriptionTokens = lastMessage.description?.trim()
+    ? countTextTokens(lastMessage.description) + 1
+    : 0;
+  fitted[fitted.length - 1] = {
+    ...lastMessage,
+    text: truncateTextToTokenBudget(
+      lastMessage.text,
+      Math.max(1, tokenBudget - descriptionTokens),
+    ),
+  };
+  return fitted;
+}
+
+function buildCompressedContextSummary(
+  context: ContextMessage[],
+  tokenBudget: number,
+): string | null {
+  if (tokenBudget <= 0 || context.length === 0) {
+    return null;
+  }
+
+  const header = "Earlier conversation summary:";
+  const headerTokens = countTextTokens(header);
+  if (headerTokens >= tokenBudget) {
+    return truncateTextToTokenBudget(header, tokenBudget);
+  }
+
+  const maxEntries = Math.min(context.length, 8);
+  const entryBudget = Math.max(
+    MIN_CONTEXT_ENTRY_TOKEN_BUDGET,
+    Math.floor((tokenBudget - headerTokens) / Math.max(1, maxEntries)),
+  );
+
+  const lines: string[] = [];
+  let remainingBudget = tokenBudget - headerTokens;
+  for (const item of context.slice(-maxEntries)) {
+    if (remainingBudget <= 0) {
+      break;
+    }
+    const summaryLine = summarizeContextMessage(
+      item,
+      Math.min(entryBudget, remainingBudget),
+    );
+    if (!summaryLine) {
+      continue;
+    }
+    const decoratedLine = `- ${summaryLine}`;
+    const lineTokens = countTextTokens(decoratedLine);
+    if (lineTokens > remainingBudget) {
+      const shortened = summarizeContextMessage(
+        item,
+        Math.max(1, remainingBudget - 1),
+      );
+      if (!shortened) {
+        break;
+      }
+      lines.push(`- ${shortened}`);
+      remainingBudget = 0;
+      break;
+    }
+    lines.push(decoratedLine);
+    remainingBudget -= lineTokens;
+  }
+
+  if (lines.length === 0) {
+    return null;
+  }
+  return `${header}\n${lines.join("\n")}`;
+}
+
+function summarizeContextMessage(
+  message: ContextMessage,
+  tokenBudget: number,
+): string {
+  if (tokenBudget <= 0) {
+    return "";
+  }
+  const prefix = message.description?.trim()
+    ? `${message.description.trim()}: `
+    : "";
+  const compactText = message.text
+    .replace(/\s+/g, " ")
+    .replace(/\s*([{}\[\](),:;])\s*/g, "$1 ")
+    .trim();
+  return truncateTextToTokenBudget(`${prefix}${compactText}`, tokenBudget);
+}
+
+function resolvePositiveInteger(
+  value: number | null | undefined,
+  fallback: number,
+): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : fallback;
 }
 
 function appendCustomContext(

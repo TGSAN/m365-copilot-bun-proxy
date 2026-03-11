@@ -60,6 +60,7 @@ import {
   type WrapperOptions,
 } from "./types";
 import { ProxyTokenProvider } from "./token-provider";
+import { buildChatCompletionUsage } from "./token-usage";
 import {
   extractGraphErrorMessage,
   isJsonObject,
@@ -425,12 +426,16 @@ async function handleChat(
           assistantText,
           "chat.completions",
         );
+        const simulatedUsage = simulatedPayload
+          ? buildUsageForSimulatedChatPayload(parsedRequest, simulatedPayload)
+          : null;
         let normalizedSimulatedPayload = simulatedPayload
           ? normalizeSimulatedChatCompletionPayload(
               simulatedPayload,
               parsedRequest.model,
               conversationId,
               options.includeConversationIdInResponseBody,
+              simulatedUsage,
             )
           : null;
 
@@ -476,12 +481,16 @@ async function handleChat(
             retryAssistantText,
             "chat.completions",
           );
+          const retrySimulatedUsage = simulatedPayload
+            ? buildUsageForSimulatedChatPayload(parsedRequest, simulatedPayload)
+            : null;
           normalizedSimulatedPayload = simulatedPayload
             ? normalizeSimulatedChatCompletionPayload(
                 simulatedPayload,
                 parsedRequest.model,
                 conversationId,
                 options.includeConversationIdInResponseBody,
+                retrySimulatedUsage,
               )
             : null;
         }
@@ -638,12 +647,16 @@ async function handleChat(
       assistantText,
       "chat.completions",
     );
+    const simulatedUsage = simulatedPayload
+      ? buildUsageForSimulatedChatPayload(parsedRequest, simulatedPayload)
+      : null;
     let normalized = simulatedPayload
       ? normalizeSimulatedChatCompletionPayload(
           simulatedPayload,
           parsedRequest.model,
           conversationId,
           options.includeConversationIdInResponseBody,
+          simulatedUsage,
         )
       : null;
 
@@ -685,12 +698,16 @@ async function handleChat(
         retryAssistantText,
         "chat.completions",
       );
+      const retrySimulatedUsage = simulatedPayload
+        ? buildUsageForSimulatedChatPayload(parsedRequest, simulatedPayload)
+        : null;
       normalized = simulatedPayload
         ? normalizeSimulatedChatCompletionPayload(
             simulatedPayload,
             parsedRequest.model,
             conversationId,
             options.includeConversationIdInResponseBody,
+            retrySimulatedUsage,
           )
         : null;
     }
@@ -767,6 +784,7 @@ async function handleChat(
       assistantResponse,
       conversationId,
       options.includeConversationIdInResponseBody,
+      buildChatCompletionUsage(parsedRequest, assistantResponse),
     ),
   );
 
@@ -1845,6 +1863,7 @@ function normalizeSimulatedChatCompletionPayload(
   model: string,
   conversationId: string,
   includeConversationId: boolean,
+  usage?: JsonObject | null,
 ): JsonObject {
   const normalized: JsonObject = { ...payload };
   const choices = normalizeSimulatedChatChoices(normalized);
@@ -1865,7 +1884,21 @@ function normalizeSimulatedChatCompletionPayload(
   if (includeConversationId) {
     normalized.conversation_id = conversationId;
   }
+  if (!isJsonObject(normalized.usage) && usage) {
+    normalized.usage = usage;
+  }
   return normalized;
+}
+
+function buildUsageForSimulatedChatPayload(
+  parsedRequest: ParsedOpenAiRequest,
+  payload: JsonObject,
+): JsonObject | null {
+  const assistantResponse = tryBuildAssistantResponseFromChatCompletionPayload(payload);
+  if (!assistantResponse) {
+    return null;
+  }
+  return buildChatCompletionUsage(parsedRequest, assistantResponse);
 }
 
 function hasUsableSimulatedChatCompletionPayload(payload: JsonObject): boolean {

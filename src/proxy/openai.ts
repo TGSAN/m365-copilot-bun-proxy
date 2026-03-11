@@ -24,6 +24,7 @@ export function buildChatCompletion(
   assistantResponse: OpenAiAssistantResponse,
   conversationId: string,
   includeConversationId: boolean,
+  usage?: JsonObject | null,
 ): JsonObject {
   const message: JsonObject = { role: "assistant" };
   if (assistantResponse.toolCalls.length > 0) {
@@ -56,6 +57,9 @@ export function buildChatCompletion(
 
   if (includeConversationId) {
     response.conversation_id = conversationId;
+  }
+  if (usage) {
+    response.usage = cloneJsonValue(usage);
   }
 
   return response;

@@ -689,9 +689,9 @@ export function resolveSubstrateTone(model: string | null | undefined): string {
       return "Claude_Sonnet_Reasoning";
     case "m365-copilot":
     case "m365-copilot-auto":
-      return "Magic";
+      return "magic";
     default:
-      return "Magic";
+      return "magic";
   }
 }
 
